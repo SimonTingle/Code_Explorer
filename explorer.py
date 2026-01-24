@@ -6,10 +6,12 @@ from tkinter import messagebox
 import mimetypes
 from datetime import datetime
 import re
-import subprocess # Added for macOS system commands
+import subprocess
+import psutil # NEW: Required for system stats
+import time
 
 class FileSystemHandler:
-    # ... [FileSystemHandler code remains unchanged from previous step] ...
+    # ... [FileSystemHandler code remains unchanged] ...
     def list_directory(self, path):
         items = []
         try:
@@ -85,6 +87,59 @@ class FileSystemHandler:
             size /= 1024
         return f"{size:.1f} PB"
 
+class SystemMonitor(ttk.Frame):
+    """
+    NEW: Handles fetching and displaying system stats.
+    """
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.last_net_io = psutil.net_io_counters()
+        self.last_time = time.time()
+        
+        # Labels for stats
+        self.lbl_disk = ttk.Label(self, text="Disk: --%", font=("Menlo", 10))
+        self.lbl_disk.pack(side=tk.LEFT, padx=8)
+        
+        self.lbl_mem = ttk.Label(self, text="Mem: --%", font=("Menlo", 10))
+        self.lbl_mem.pack(side=tk.LEFT, padx=8)
+        
+        self.lbl_net = ttk.Label(self, text="↓ 0 KB/s  ↑ 0 KB/s", font=("Menlo", 10))
+        self.lbl_net.pack(side=tk.LEFT, padx=8)
+        
+        self.update_stats()
+
+    def update_stats(self):
+        # 1. Disk Usage (Root)
+        disk = psutil.disk_usage('/')
+        self.lbl_disk.config(text=f"Disk: {disk.percent}%")
+        
+        # 2. Memory Usage
+        mem = psutil.virtual_memory()
+        self.lbl_mem.config(text=f"Mem: {mem.percent}%")
+        
+        # 3. Network Speed
+        current_net = psutil.net_io_counters()
+        current_time = time.time()
+        
+        dt = current_time - self.last_time
+        if dt > 0:
+            # Calculate bytes per second
+            down_speed = (current_net.bytes_recv - self.last_net_io.bytes_recv) / dt
+            up_speed = (current_net.bytes_sent - self.last_net_io.bytes_sent) / dt
+            
+            self.lbl_net.config(text=f"↓ {self._format_speed(down_speed)}  ↑ {self._format_speed(up_speed)}")
+            
+            self.last_net_io = current_net
+            self.last_time = current_time
+        
+        # Update every 1000ms (1 second)
+        self.after(1000, self.update_stats)
+
+    def _format_speed(self, bytes_sec):
+        if bytes_sec < 1024: return f"{int(bytes_sec)} B/s"
+        elif bytes_sec < 1024**2: return f"{bytes_sec/1024:.1f} KB/s"
+        else: return f"{bytes_sec/1024**2:.1f} MB/s"
+
 class ExplorerUI(ttk.Frame):
     def __init__(self, parent, logic_handler):
         super().__init__(parent)
@@ -94,19 +149,26 @@ class ExplorerUI(ttk.Frame):
         self.sort_reverse = False
         
         self._setup_layout()
-        self._setup_context_menu() # Initialize the right-click menu
+        self._setup_context_menu() 
         self._bind_events()
         self.load_path(self.current_path)
 
     def _setup_layout(self):
         self.pack(fill=tk.BOTH, expand=True)
-        nav_frame = ttk.Frame(self, padding=(10, 10))
-        nav_frame.pack(fill=tk.X)
+        
+        # --- Top Bar (Nav + Monitor) ---
+        top_bar = ttk.Frame(self, padding=(5, 5))
+        top_bar.pack(fill=tk.X)
+        
+        # Left side: Navigation
+        nav_frame = ttk.Frame(top_bar)
+        nav_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         self.path_var = tk.StringVar()
+        ttk.Button(nav_frame, text="Up", command=self.go_up).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Entry(nav_frame, textvariable=self.path_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        ttk.Button(nav_frame, text="Up", command=self.go_up).pack(side=tk.LEFT, padx=(0, 10))
-
+        
+        # Search controls inside nav
         ttk.Label(nav_frame, text="Search:").pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(nav_frame, textvariable=self.search_var, width=15)
@@ -114,6 +176,19 @@ class ExplorerUI(ttk.Frame):
         ttk.Button(nav_frame, text="Go", command=self.perform_search).pack(side=tk.LEFT)
         self.clear_btn = ttk.Button(nav_frame, text="X", width=3, command=self.clear_search, state=tk.DISABLED)
         self.clear_btn.pack(side=tk.LEFT, padx=(2, 0))
+
+        # Right side: System Monitor
+        # Separator line
+        ttk.Separator(top_bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+        
+        # NEW: Add System Monitor Widget
+        self.monitor = SystemMonitor(top_bar)
+        self.monitor.pack(side=tk.RIGHT)
+
+        # REASON FOR COMMENTING: Replaced old nav_frame pack structure to accommodate split top_bar
+        # nav_frame = ttk.Frame(self, padding=(10, 10))
+        # nav_frame.pack(fill=tk.X)
+        # ... (Old widget packing logic was moved into 'top_bar' above)
 
         self.paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
@@ -149,7 +224,6 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.pack(fill=tk.BOTH, expand=True)
 
     def _setup_context_menu(self):
-        """Creates the right-click menu structure."""
         self.context_menu = tk.Menu(self, tearoff=0)
         self.context_menu.add_command(label="Reveal in Finder", command=self.reveal_in_finder)
         self.context_menu.add_command(label="Copy Path", command=self.copy_path_to_clipboard)
@@ -161,18 +235,13 @@ class ExplorerUI(ttk.Frame):
         self.tree.bind("<Return>", self.on_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.search_entry.bind("<Return>", lambda e: self.perform_search())
-        
-        # macOS Right-Click binding (Button-2 for trackpad/right-click)
         self.tree.bind("<Button-2>", self.show_context_menu)
-        # Reason for addition: Support standard mouse right-click as well
         self.tree.bind("<Button-3>", self.show_context_menu)
 
     def show_context_menu(self, event):
-        """Positions and shows the menu at the cursor location."""
-        # Identify the row under the cursor
         item = self.tree.identify_row(event.y)
         if item:
-            self.tree.selection_set(item) # Select the item being right-clicked
+            self.tree.selection_set(item) 
             self.context_menu.post(event.x_root, event.y_root)
 
     def reveal_in_finder(self):
@@ -274,6 +343,6 @@ class ExplorerUI(ttk.Frame):
 if __name__ == "__main__":
     root = tk.Tk()
     root.title("MacExplorer Pro")
-    root.geometry("900x600")
+    root.geometry("1100x600") # REASON: Widened window to fit system monitor
     app = ExplorerUI(root, FileSystemHandler())
     root.mainloop()

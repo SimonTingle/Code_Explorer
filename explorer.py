@@ -122,7 +122,9 @@ class ExplorerUI(ttk.Frame):
         
         self._setup_layout()
         self._bind_events()
-        self.refresh_view()
+        
+        # FIX: Directly call load_path instead of the missing refresh_view
+        self.load_path(self.current_path)
 
     def _setup_layout(self):
         self.pack(fill=tk.BOTH, expand=True)
@@ -144,6 +146,7 @@ class ExplorerUI(ttk.Frame):
         ttk.Label(nav_frame, text="Search:").pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(nav_frame, textvariable=self.search_var, width=15)
+        self.search_entry.bind("<Return>", lambda e: self.perform_search())
         self.search_entry.pack(side=tk.LEFT, padx=(5, 5))
         
         self.search_btn = ttk.Button(nav_frame, text="Go", command=self.perform_search)
@@ -190,7 +193,6 @@ class ExplorerUI(ttk.Frame):
         self.tree.bind("<Double-1>", self.on_double_click)
         self.tree.bind("<Return>", self.on_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
-        self.search_entry.bind("<Return>", lambda e: self.perform_search())
 
     def go_up(self):
         if self.is_searching:

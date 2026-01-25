@@ -7,11 +7,17 @@ import mimetypes
 from datetime import datetime
 import re
 import subprocess
-import psutil # NEW: Required for system stats
 import time
 
+# 
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 class FileSystemHandler:
-    # ... [FileSystemHandler code remains unchanged] ...
+    # ... (Keeping existing logic as it is stable) ...
     def list_directory(self, path):
         items = []
         try:
@@ -66,11 +72,9 @@ class FileSystemHandler:
              return "Info", "Item not found."
         if os.path.isdir(path):
             return "Folder Info", f"Path: {path}\nContains: {len(os.listdir(path))} items"
-
         mime_type, _ = mimetypes.guess_type(path)
         stats = os.stat(path)
         header = f"File: {os.path.basename(path)}\nType: {mime_type or 'Unknown'}\nSize: {self._format_size(stats.st_size)}"
-
         text_extensions = {'.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml'}
         if (mime_type and mime_type.startswith('text')) or (os.path.splitext(path)[1].lower() in text_extensions):
             try:
@@ -88,51 +92,46 @@ class FileSystemHandler:
         return f"{size:.1f} PB"
 
 class SystemMonitor(ttk.Frame):
-    """
-    NEW: Handles fetching and displaying system stats.
-    """
     def __init__(self, parent):
         super().__init__(parent)
+        if psutil is None:
+            self.lbl_error = ttk.Label(self, text="⚠️ Install 'psutil'", foreground="red")
+            self.lbl_error.pack(side=tk.LEFT, padx=10)
+            return
+
         self.last_net_io = psutil.net_io_counters()
         self.last_time = time.time()
         
-        # Labels for stats
-        self.lbl_disk = ttk.Label(self, text="Disk: --%", font=("Menlo", 10))
-        self.lbl_disk.pack(side=tk.LEFT, padx=8)
+        # Reason for update: Added min-width to network labels using justify and anchoring 
+        # to prevent shifting left/right neighbors
+        self.lbl_disk = ttk.Label(self, text="Disk: --%", font=("Menlo", 10), width=12)
+        self.lbl_disk.pack(side=tk.LEFT, padx=5)
         
-        self.lbl_mem = ttk.Label(self, text="Mem: --%", font=("Menlo", 10))
-        self.lbl_mem.pack(side=tk.LEFT, padx=8)
+        self.lbl_mem = ttk.Label(self, text="Mem: --%", font=("Menlo", 10), width=12)
+        self.lbl_mem.pack(side=tk.LEFT, padx=5)
         
-        self.lbl_net = ttk.Label(self, text="↓ 0 KB/s  ↑ 0 KB/s", font=("Menlo", 10))
-        self.lbl_net.pack(side=tk.LEFT, padx=8)
+        self.lbl_net = ttk.Label(self, text="↓ 0 KB/s ↑ 0 KB/s", font=("Menlo", 10), width=25)
+        self.lbl_net.pack(side=tk.LEFT, padx=5)
         
         self.update_stats()
 
     def update_stats(self):
-        # 1. Disk Usage (Root)
-        disk = psutil.disk_usage('/')
-        self.lbl_disk.config(text=f"Disk: {disk.percent}%")
-        
-        # 2. Memory Usage
-        mem = psutil.virtual_memory()
-        self.lbl_mem.config(text=f"Mem: {mem.percent}%")
-        
-        # 3. Network Speed
-        current_net = psutil.net_io_counters()
-        current_time = time.time()
-        
-        dt = current_time - self.last_time
-        if dt > 0:
-            # Calculate bytes per second
-            down_speed = (current_net.bytes_recv - self.last_net_io.bytes_recv) / dt
-            up_speed = (current_net.bytes_sent - self.last_net_io.bytes_sent) / dt
-            
-            self.lbl_net.config(text=f"↓ {self._format_speed(down_speed)}  ↑ {self._format_speed(up_speed)}")
-            
-            self.last_net_io = current_net
-            self.last_time = current_time
-        
-        # Update every 1000ms (1 second)
+        if psutil is None: return
+        try:
+            disk = psutil.disk_usage('/')
+            self.lbl_disk.config(text=f"Disk: {disk.percent}%")
+            mem = psutil.virtual_memory()
+            self.lbl_mem.config(text=f"Mem: {mem.percent}%")
+            current_net = psutil.net_io_counters()
+            current_time = time.time()
+            dt = current_time - self.last_time
+            if dt > 0:
+                down_speed = (current_net.bytes_recv - self.last_net_io.bytes_recv) / dt
+                up_speed = (current_net.bytes_sent - self.last_net_io.bytes_sent) / dt
+                self.lbl_net.config(text=f"↓ {self._format_speed(down_speed)} ↑ {self._format_speed(up_speed)}")
+                self.last_net_io = current_net
+                self.last_time = current_time
+        except: pass
         self.after(1000, self.update_stats)
 
     def _format_speed(self, bytes_sec):
@@ -147,7 +146,6 @@ class ExplorerUI(ttk.Frame):
         self.current_path = os.path.expanduser("~")
         self.is_searching = False
         self.sort_reverse = False
-        
         self._setup_layout()
         self._setup_context_menu() 
         self._bind_events()
@@ -156,39 +154,47 @@ class ExplorerUI(ttk.Frame):
     def _setup_layout(self):
         self.pack(fill=tk.BOTH, expand=True)
         
-        # --- Top Bar (Nav + Monitor) ---
-        top_bar = ttk.Frame(self, padding=(5, 5))
-        top_bar.pack(fill=tk.X)
-        
-        # Left side: Navigation
-        nav_frame = ttk.Frame(top_bar)
+        # --- Top Container (Nav on Left, Monitor on Right) ---
+        top_container = ttk.Frame(self, padding=(5, 5))
+        top_container.pack(fill=tk.X)
+
+        # 1. Navigation Frame (Anchored Left)
+        nav_frame = ttk.Frame(top_container)
         nav_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        ttk.Button(nav_frame, text="Up", command=self.go_up, width=5).pack(side=tk.LEFT, padx=(0, 5))
         
         self.path_var = tk.StringVar()
-        ttk.Button(nav_frame, text="Up", command=self.go_up).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Entry(nav_frame, textvariable=self.path_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        # Reason for update: Added a 'weight' or specific packing to ensure path expands 
+        # but doesn't push the system monitor out of view
+        self.path_entry = ttk.Entry(nav_frame, textvariable=self.path_var)
+        self.path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
-        # Search controls inside nav
         ttk.Label(nav_frame, text="Search:").pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(nav_frame, textvariable=self.search_var, width=15)
         self.search_entry.pack(side=tk.LEFT, padx=(5, 5))
-        ttk.Button(nav_frame, text="Go", command=self.perform_search).pack(side=tk.LEFT)
+        
+        self.search_btn = ttk.Button(nav_frame, text="Go", command=self.perform_search, width=5)
+        self.search_btn.pack(side=tk.LEFT)
+        
         self.clear_btn = ttk.Button(nav_frame, text="X", width=3, command=self.clear_search, state=tk.DISABLED)
         self.clear_btn.pack(side=tk.LEFT, padx=(2, 0))
 
-        # Right side: System Monitor
-        # Separator line
-        ttk.Separator(top_bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+        # 2. System Monitor Frame (Anchored Right)
+        # Reason for update: Separating this into its own pack(side=RIGHT) ensures it 
+        # stays pinned to the right edge regardless of what happens in nav_frame.
+        monitor_frame = ttk.Frame(top_container)
+        monitor_frame.pack(side=tk.RIGHT, padx=(10, 0))
         
-        # NEW: Add System Monitor Widget
-        self.monitor = SystemMonitor(top_bar)
-        self.monitor.pack(side=tk.RIGHT)
+        ttk.Separator(monitor_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        self.monitor = SystemMonitor(monitor_frame)
+        self.monitor.pack(side=tk.LEFT)
 
-        # REASON FOR COMMENTING: Replaced old nav_frame pack structure to accommodate split top_bar
-        # nav_frame = ttk.Frame(self, padding=(10, 10))
-        # nav_frame.pack(fill=tk.X)
-        # ... (Old widget packing logic was moved into 'top_bar' above)
+        # REASON FOR COMMENTING: Previous layout packed nav and monitor into the same expanding frame, 
+        # which caused 'Go' and 'X' to shift when text lengths changed.
+        # nav_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # self.monitor.pack(side=tk.RIGHT)
 
         self.paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
@@ -198,19 +204,15 @@ class ExplorerUI(ttk.Frame):
 
         columns = ("size", "modified")
         self.tree = ttk.Treeview(self.tree_frame, columns=columns, selectmode="browse")
-        
         self.tree.heading("#0", text="Name ↑↓", command=lambda: self._sort_column("#0"))
         self.tree.heading("size", text="Size ↑↓", command=lambda: self._sort_column("size"))
         self.tree.heading("modified", text="Date Modified ↑↓", command=lambda: self._sort_column("modified"))
-        
         self.tree.column("#0", stretch=True, width=250)
         self.tree.column("size", width=100, anchor=tk.E)
         self.tree.column("modified", width=150)
-
         self.tree.tag_configure('folder', foreground='#007AFF') 
         self.tree.tag_configure('python', foreground='#2E7D32')
         self.tree.tag_configure('config', foreground='#EF6C00')
-        
         scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -246,8 +248,7 @@ class ExplorerUI(ttk.Frame):
 
     def reveal_in_finder(self):
         path = self.tree.focus()
-        if path:
-            subprocess.run(["open", "-R", path])
+        if path: subprocess.run(["open", "-R", path])
 
     def copy_path_to_clipboard(self):
         path = self.tree.focus()
@@ -267,8 +268,7 @@ class ExplorerUI(ttk.Frame):
         def natural_key(text):
             return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
         def get_value(item_id):
-            if col == "#0":
-                return natural_key(self.tree.item(item_id, 'text'))
+            if col == "#0": return natural_key(self.tree.item(item_id, 'text'))
             return natural_key(self.tree.set(item_id, col))
         self.sort_reverse = not self.sort_reverse
         sorted_items = sorted(children, key=get_value, reverse=self.sort_reverse)
@@ -295,14 +295,12 @@ class ExplorerUI(ttk.Frame):
                 if item['is_dir']: item_tags.append('folder')
                 elif item['name'].endswith('.py'): item_tags.append('python')
                 elif item['name'].endswith(('.json', '.yaml', '.yml', '.md')): item_tags.append('config')
-
                 self.tree.insert("", tk.END, iid=item['path'], text=display_name, 
-                                 values=(item['size'], item['modified']), 
-                                 tags=tuple(item_tags))
+                                 values=(item['size'], item['modified']), tags=tuple(item_tags))
 
     def on_double_click(self, event):
         sid = self.tree.focus()
-        if sid and os.path.isdir(sid):
+        if sid and os.stat(sid).st_mode & 0o40000: # Fast check for directory
             if self.is_searching: self.clear_search()
             self.load_path(sid)
 
@@ -313,8 +311,7 @@ class ExplorerUI(ttk.Frame):
     def update_preview(self, path):
         self.txt_preview.config(state=tk.NORMAL)
         self.txt_preview.delete(1.0, tk.END)
-        if not path:
-            self.lbl_meta.config(text="No Selection")
+        if not path: self.lbl_meta.config(text="No Selection")
         else:
             header, content = self.logic.get_preview_content(path)
             self.lbl_meta.config(text=header)
@@ -343,6 +340,6 @@ class ExplorerUI(ttk.Frame):
 if __name__ == "__main__":
     root = tk.Tk()
     root.title("MacExplorer Pro")
-    root.geometry("1100x600") # REASON: Widened window to fit system monitor
+    root.geometry("1100x600") 
     app = ExplorerUI(root, FileSystemHandler())
     root.mainloop()

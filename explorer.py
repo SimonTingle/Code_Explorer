@@ -8,8 +8,7 @@ from datetime import datetime
 import re
 import subprocess
 import time
-
-# 
+import threading # NEW: For background tasks
 
 try:
     import psutil
@@ -17,7 +16,7 @@ except ImportError:
     psutil = None
 
 class FileSystemHandler:
-    # ... (Keeping existing logic as it is stable) ...
+    # ... (Logic remains largely the same, optimized for thread calls) ...
     def list_directory(self, path):
         items = []
         try:
@@ -29,7 +28,8 @@ class FileSystemHandler:
         items.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
         return items
 
-    def search_files(self, start_path, query):
+    def search_files(self, start_path, query, callback_progress=None):
+        """Modified to allow progress updates if needed."""
         items = []
         query = query.lower()
         try:
@@ -40,7 +40,7 @@ class FileSystemHandler:
                 for f in files:
                     if query in f.lower():
                         items.append(self._create_item_dict_from_path(os.path.join(root, f)))
-                if len(items) > 1000: break
+                if len(items) > 2000: break # Increased limit for threads
         except Exception:
             pass
         return items
@@ -71,7 +71,10 @@ class FileSystemHandler:
         if not path or not os.path.exists(path):
              return "Info", "Item not found."
         if os.path.isdir(path):
-            return "Folder Info", f"Path: {path}\nContains: {len(os.listdir(path))} items"
+            try:
+                count = len(os.listdir(path))
+            except: count = "?"
+            return "Folder Info", f"Path: {path}\nContains: {count} items"
         mime_type, _ = mimetypes.guess_type(path)
         stats = os.stat(path)
         header = f"File: {os.path.basename(path)}\nType: {mime_type or 'Unknown'}\nSize: {self._format_size(stats.st_size)}"
@@ -94,50 +97,61 @@ class FileSystemHandler:
 class SystemMonitor(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
+        self.active_tasks = 0 # NEW: Counter for background threads
+        
         if psutil is None:
-            self.lbl_error = ttk.Label(self, text="⚠️ Install 'psutil'", foreground="red")
+            self.lbl_error = ttk.Label(self, text="⚠️ Install 'psutil'", foreground="red", font=("Menlo", 9))
             self.lbl_error.pack(side=tk.LEFT, padx=10)
             return
 
         self.last_net_io = psutil.net_io_counters()
         self.last_time = time.time()
         
-        # Reason for update: Added min-width to network labels using justify and anchoring 
-        # to prevent shifting left/right neighbors
-        self.lbl_disk = ttk.Label(self, text="Disk: --%", font=("Menlo", 10), width=12)
-        self.lbl_disk.pack(side=tk.LEFT, padx=5)
+        # Reason for update: Reduced font size to 9 and adjusted widths to fit task counter
+        font_cfg = ("Menlo", 9)
         
-        self.lbl_mem = ttk.Label(self, text="Mem: --%", font=("Menlo", 10), width=12)
-        self.lbl_mem.pack(side=tk.LEFT, padx=5)
+        self.lbl_task = ttk.Label(self, text="Tasks: 0", font=font_cfg, width=10, foreground="#007AFF")
+        self.lbl_task.pack(side=tk.LEFT, padx=2)
+
+        self.lbl_disk = ttk.Label(self, text="D: --%", font=font_cfg, width=8)
+        self.lbl_disk.pack(side=tk.LEFT, padx=2)
         
-        self.lbl_net = ttk.Label(self, text="↓ 0 KB/s ↑ 0 KB/s", font=("Menlo", 10), width=25)
-        self.lbl_net.pack(side=tk.LEFT, padx=5)
+        self.lbl_mem = ttk.Label(self, text="M: --%", font=font_cfg, width=8)
+        self.lbl_mem.pack(side=tk.LEFT, padx=2)
+        
+        self.lbl_net = ttk.Label(self, text="↓ 0K ↑ 0K", font=font_cfg, width=20)
+        self.lbl_net.pack(side=tk.LEFT, padx=2)
         
         self.update_stats()
+
+    def set_tasks(self, count):
+        """Update the visible thread counter."""
+        self.active_tasks = count
+        self.lbl_task.config(text=f"Tasks: {self.active_tasks}")
 
     def update_stats(self):
         if psutil is None: return
         try:
             disk = psutil.disk_usage('/')
-            self.lbl_disk.config(text=f"Disk: {disk.percent}%")
+            self.lbl_disk.config(text=f"D: {disk.percent}%")
             mem = psutil.virtual_memory()
-            self.lbl_mem.config(text=f"Mem: {mem.percent}%")
+            self.lbl_mem.config(text=f"M: {mem.percent}%")
             current_net = psutil.net_io_counters()
             current_time = time.time()
             dt = current_time - self.last_time
             if dt > 0:
                 down_speed = (current_net.bytes_recv - self.last_net_io.bytes_recv) / dt
                 up_speed = (current_net.bytes_sent - self.last_net_io.bytes_sent) / dt
-                self.lbl_net.config(text=f"↓ {self._format_speed(down_speed)} ↑ {self._format_speed(up_speed)}")
+                self.lbl_net.config(text=f"↓{self._format_speed(down_speed)} ↑{self._format_speed(up_speed)}")
                 self.last_net_io = current_net
                 self.last_time = current_time
         except: pass
         self.after(1000, self.update_stats)
 
     def _format_speed(self, bytes_sec):
-        if bytes_sec < 1024: return f"{int(bytes_sec)} B/s"
-        elif bytes_sec < 1024**2: return f"{bytes_sec/1024:.1f} KB/s"
-        else: return f"{bytes_sec/1024**2:.1f} MB/s"
+        if bytes_sec < 1024: return f"{int(bytes_sec)}B"
+        elif bytes_sec < 1024**2: return f"{bytes_sec/1024:.0f}K"
+        else: return f"{bytes_sec/1024**2:.1f}M"
 
 class ExplorerUI(ttk.Frame):
     def __init__(self, parent, logic_handler):
@@ -146,6 +160,8 @@ class ExplorerUI(ttk.Frame):
         self.current_path = os.path.expanduser("~")
         self.is_searching = False
         self.sort_reverse = False
+        self.running_threads = 0 # Track active background jobs
+        
         self._setup_layout()
         self._setup_context_menu() 
         self._bind_events()
@@ -153,48 +169,32 @@ class ExplorerUI(ttk.Frame):
 
     def _setup_layout(self):
         self.pack(fill=tk.BOTH, expand=True)
-        
-        # --- Top Container (Nav on Left, Monitor on Right) ---
         top_container = ttk.Frame(self, padding=(5, 5))
         top_container.pack(fill=tk.X)
 
-        # 1. Navigation Frame (Anchored Left)
         nav_frame = ttk.Frame(top_container)
         nav_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        ttk.Button(nav_frame, text="Up", command=self.go_up, width=5).pack(side=tk.LEFT, padx=(0, 5))
-        
+        ttk.Button(nav_frame, text="Up", command=self.go_up, width=4).pack(side=tk.LEFT, padx=(0, 5))
         self.path_var = tk.StringVar()
-        # Reason for update: Added a 'weight' or specific packing to ensure path expands 
-        # but doesn't push the system monitor out of view
         self.path_entry = ttk.Entry(nav_frame, textvariable=self.path_var)
         self.path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
-        ttk.Label(nav_frame, text="Search:").pack(side=tk.LEFT)
+        ttk.Label(nav_frame, text="S:", font=("Helvetica", 10)).pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
-        self.search_entry = ttk.Entry(nav_frame, textvariable=self.search_var, width=15)
-        self.search_entry.pack(side=tk.LEFT, padx=(5, 5))
+        self.search_entry = ttk.Entry(nav_frame, textvariable=self.search_var, width=12)
+        self.search_entry.pack(side=tk.LEFT, padx=(2, 5))
         
-        self.search_btn = ttk.Button(nav_frame, text="Go", command=self.perform_search, width=5)
+        self.search_btn = ttk.Button(nav_frame, text="Go", command=self.perform_search, width=4)
         self.search_btn.pack(side=tk.LEFT)
-        
-        self.clear_btn = ttk.Button(nav_frame, text="X", width=3, command=self.clear_search, state=tk.DISABLED)
+        self.clear_btn = ttk.Button(nav_frame, text="X", width=2, command=self.clear_search, state=tk.DISABLED)
         self.clear_btn.pack(side=tk.LEFT, padx=(2, 0))
 
-        # 2. System Monitor Frame (Anchored Right)
-        # Reason for update: Separating this into its own pack(side=RIGHT) ensures it 
-        # stays pinned to the right edge regardless of what happens in nav_frame.
         monitor_frame = ttk.Frame(top_container)
-        monitor_frame.pack(side=tk.RIGHT, padx=(10, 0))
-        
-        ttk.Separator(monitor_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        monitor_frame.pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Separator(monitor_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=2)
         self.monitor = SystemMonitor(monitor_frame)
         self.monitor.pack(side=tk.LEFT)
-
-        # REASON FOR COMMENTING: Previous layout packed nav and monitor into the same expanding frame, 
-        # which caused 'Go' and 'X' to shift when text lengths changed.
-        # nav_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        # self.monitor.pack(side=tk.RIGHT)
 
         self.paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
@@ -204,12 +204,12 @@ class ExplorerUI(ttk.Frame):
 
         columns = ("size", "modified")
         self.tree = ttk.Treeview(self.tree_frame, columns=columns, selectmode="browse")
-        self.tree.heading("#0", text="Name ↑↓", command=lambda: self._sort_column("#0"))
-        self.tree.heading("size", text="Size ↑↓", command=lambda: self._sort_column("size"))
-        self.tree.heading("modified", text="Date Modified ↑↓", command=lambda: self._sort_column("modified"))
+        self.tree.heading("#0", text="Name", command=lambda: self._sort_column("#0"))
+        self.tree.heading("size", text="Size", command=lambda: self._sort_column("size"))
+        self.tree.heading("modified", text="Modified", command=lambda: self._sort_column("modified"))
         self.tree.column("#0", stretch=True, width=250)
-        self.tree.column("size", width=100, anchor=tk.E)
-        self.tree.column("modified", width=150)
+        self.tree.column("size", width=80, anchor=tk.E)
+        self.tree.column("modified", width=130)
         self.tree.tag_configure('folder', foreground='#007AFF') 
         self.tree.tag_configure('python', foreground='#2E7D32')
         self.tree.tag_configure('config', foreground='#EF6C00')
@@ -220,10 +220,53 @@ class ExplorerUI(ttk.Frame):
 
         self.preview_frame = ttk.Frame(self.paned_window, relief="sunken", padding=5)
         self.paned_window.add(self.preview_frame, weight=0)
-        self.lbl_meta = ttk.Label(self.preview_frame, text="Select a file", font=("Helvetica", 11, "bold"))
+        self.lbl_meta = ttk.Label(self.preview_frame, text="Select a file", font=("Helvetica", 10, "bold"))
         self.lbl_meta.pack(anchor="nw", fill=tk.X, pady=(0, 5))
-        self.txt_preview = tk.Text(self.preview_frame, wrap="none", height=10, width=40, font=("Menlo", 11), state=tk.DISABLED)
+        self.txt_preview = tk.Text(self.preview_frame, wrap="none", height=10, width=35, font=("Menlo", 10), state=tk.DISABLED)
         self.txt_preview.pack(fill=tk.BOTH, expand=True)
+
+    def _update_task_status(self, delta):
+        self.running_threads += delta
+        self.monitor.set_tasks(self.running_threads)
+
+    def load_path(self, path):
+        # REASON FOR COMMENTING: Original load_path was synchronous and caused the hang.
+        # items = self.logic.list_directory(path)
+        # self._populate_tree(items)
+        
+        self._update_task_status(1)
+        def bg_load():
+            items = self.logic.list_directory(path)
+            # Use after() to update UI from thread safely
+            self.after(0, lambda: self._finish_load(items, path))
+            
+        threading.Thread(target=bg_load, daemon=True).start()
+
+    def _finish_load(self, items, path):
+        if items is None:
+            messagebox.showerror("Error", "Permission Denied")
+        else:
+            self.current_path = path
+            self.path_var.set(path)
+            self._populate_tree(items)
+        self._update_task_status(-1)
+
+    def perform_search(self):
+        q = self.search_var.get().strip()
+        if not q: return
+        self.is_searching = True
+        self.clear_btn.config(state=tk.NORMAL)
+        
+        self._update_task_status(1)
+        def bg_search():
+            results = self.logic.search_files(self.current_path, q)
+            self.after(0, lambda: self._finish_search(results))
+            
+        threading.Thread(target=bg_search, daemon=True).start()
+
+    def _finish_search(self, results):
+        self._populate_tree(results)
+        self._update_task_status(-1)
 
     def _setup_context_menu(self):
         self.context_menu = tk.Menu(self, tearoff=0)
@@ -255,7 +298,6 @@ class ExplorerUI(ttk.Frame):
         if path:
             self.clipboard_clear()
             self.clipboard_append(path)
-            messagebox.showinfo("Clipboard", f"Path copied:\n{path}")
 
     def open_in_terminal(self):
         path = self.tree.focus()
@@ -275,15 +317,6 @@ class ExplorerUI(ttk.Frame):
         for index, item_id in enumerate(sorted_items):
             self.tree.move(item_id, '', index)
 
-    def load_path(self, path):
-        items = self.logic.list_directory(path)
-        if items is None:
-            messagebox.showerror("Error", "Permission Denied")
-            return
-        self.current_path = path
-        self.path_var.set(path)
-        self._populate_tree(items)
-
     def _populate_tree(self, items):
         for item in self.tree.get_children(): self.tree.delete(item)
         self.update_preview(None)
@@ -300,7 +333,7 @@ class ExplorerUI(ttk.Frame):
 
     def on_double_click(self, event):
         sid = self.tree.focus()
-        if sid and os.stat(sid).st_mode & 0o40000: # Fast check for directory
+        if sid and os.path.isdir(sid):
             if self.is_searching: self.clear_search()
             self.load_path(sid)
 
@@ -309,6 +342,7 @@ class ExplorerUI(ttk.Frame):
         if sid: self.update_preview(sid)
 
     def update_preview(self, path):
+        # Preview is fast enough for small chunks, but could be threaded if we add syntax highlighting
         self.txt_preview.config(state=tk.NORMAL)
         self.txt_preview.delete(1.0, tk.END)
         if not path: self.lbl_meta.config(text="No Selection")
@@ -317,13 +351,6 @@ class ExplorerUI(ttk.Frame):
             self.lbl_meta.config(text=header)
             self.txt_preview.insert(tk.END, content)
         self.txt_preview.config(state=tk.DISABLED)
-
-    def perform_search(self):
-        q = self.search_var.get().strip()
-        if not q: return
-        self.is_searching = True
-        self.clear_btn.config(state=tk.NORMAL)
-        self._populate_tree(self.logic.search_files(self.current_path, q))
 
     def clear_search(self):
         self.is_searching = False

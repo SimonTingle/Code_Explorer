@@ -8,34 +8,62 @@ from datetime import datetime
 import re
 import subprocess
 import time
-import threading 
+import threading
+import json # NEW: For permanent favorites storage
 
+# 
 try:
     import psutil
 except ImportError:
     psutil = None
 
+# --- Helper for Hover Labels (ToolTips) ---
+class ToolTip:
+    """Creates a small pop-up window when the mouse hovers over a widget."""
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        self.widget.bind("<Enter>", self.show_tip)
+        self.widget.bind("<Leave>", self.hide_tip)
+
+    def show_tip(self, event=None):
+        if self.tip_window or not self.text:
+            return
+        x, y, cx, cy = self.widget.bbox("insert")
+        x = x + self.widget.winfo_rootx() + 25
+        y = y + cy + self.widget.winfo_rooty() + 25
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(1)
+        tw.wm_geometry("+%d+%d" % (x, y))
+        label = tk.Label(tw, text=self.text, justify=tk.LEFT,
+                      background="#ffffe0", relief=tk.SOLID, borderwidth=1,
+                      font=("tahoma", "10", "normal"))
+        label.pack(ipadx=1)
+
+    def hide_tip(self, event=None):
+        tw = self.tip_window
+        self.tip_window = None
+        if tw:
+            tw.destroy()
+
 class FileSystemHandler:
-    # REASON FOR UPDATE: Added cancel_event check to allow "culling" of long-running searches
+    # ... (Handler logic remains unchanged for listing and searching) ...
     def search_files(self, start_path, query, cancel_event=None):
         items = []
         query = query.lower()
         try:
             for root, dirs, files in os.walk(start_path):
-                # Check if we should stop this thread
                 if cancel_event and cancel_event.is_set():
                     return None
-
                 for d in dirs:
                     if query in d.lower():
                         items.append(self._create_item_dict_from_path(os.path.join(root, d)))
                 for f in files:
                     if query in f.lower():
                         items.append(self._create_item_dict_from_path(os.path.join(root, f)))
-                
                 if len(items) > 2000: break 
-        except Exception:
-            pass
+        except Exception: pass
         return items
 
     def list_directory(self, path):
@@ -44,8 +72,7 @@ class FileSystemHandler:
             with os.scandir(path) as it:
                 for entry in it:
                     items.append(self._create_item_dict(entry))
-        except PermissionError:
-            return None
+        except PermissionError: return None
         items.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
         return items
 
@@ -57,26 +84,27 @@ class FileSystemHandler:
         try:
             stats = os.stat(path)
             return self._format_item_data(os.path.basename(path), path, os.path.isdir(path), stats)
-        except (FileNotFoundError, PermissionError):
-            return None
+        except (FileNotFoundError, PermissionError): return None
 
     def _format_item_data(self, name, path, is_dir, stats):
         return {
-            "name": name,
-            "path": path,
-            "is_dir": is_dir,
+            "name": name, "path": path, "is_dir": is_dir,
             "raw_size": stats.st_size if not is_dir else -1,
             "size": self._format_size(stats.st_size) if not is_dir else "--",
             "modified": datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M'),
             "raw_modified": stats.st_mtime
         }
 
+    def _format_size(self, size):
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024: return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} PB"
+
     def get_preview_content(self, path):
-        if not path or not os.path.exists(path):
-             return "Info", "Item not found."
+        if not path or not os.path.exists(path): return "Info", "Item not found."
         if os.path.isdir(path):
-            try:
-                count = len(os.listdir(path))
+            try: count = len(os.listdir(path))
             except: count = "?"
             return "Folder Info", f"Path: {path}\nContains: {count} items"
         mime_type, _ = mimetypes.guess_type(path)
@@ -88,67 +116,49 @@ class FileSystemHandler:
                 with open(path, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read(2048)
                     return header, content + ("\n\n... [Truncated] ..." if stats.st_size > 2048 else "")
-            except Exception as e:
-                return header, f"Error reading text: {str(e)}"
+            except Exception as e: return header, f"Error reading text: {str(e)}"
         return header, "[Binary File]\nNo preview available."
-
-    def _format_size(self, size):
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if size < 1024: return f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{size:.1f} PB"
 
 class SystemMonitor(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         self.active_tasks = 0 
-        
         if psutil is None:
-            self.lbl_error = ttk.Label(self, text="⚠️ Install 'psutil'", foreground="red", font=("Menlo", 9))
-            self.lbl_error.pack(side=tk.LEFT, padx=10)
+            ttk.Label(self, text="⚠️ No psutil", font=("Menlo", 9), foreground="red").pack(side=tk.LEFT, padx=10)
             return
-
-        self.last_net_io = psutil.net_io_counters()
-        self.last_time = time.time()
-        
-        font_cfg = ("Menlo", 9)
-        self.lbl_task = ttk.Label(self, text="Tasks: 0", font=font_cfg, width=10, foreground="#007AFF")
+        self.last_net_io = psutil.net_io_counters(); self.last_time = time.time()
+        f_cfg = ("Menlo", 9)
+        self.lbl_task = ttk.Label(self, text="T: 0", font=f_cfg, width=6, foreground="#007AFF")
         self.lbl_task.pack(side=tk.LEFT, padx=2)
-        self.lbl_disk = ttk.Label(self, text="D: --%", font=font_cfg, width=8)
+        self.lbl_disk = ttk.Label(self, text="D: --%", font=f_cfg, width=7)
         self.lbl_disk.pack(side=tk.LEFT, padx=2)
-        self.lbl_mem = ttk.Label(self, text="M: --%", font=font_cfg, width=8)
+        self.lbl_mem = ttk.Label(self, text="M: --%", font=f_cfg, width=7)
         self.lbl_mem.pack(side=tk.LEFT, padx=2)
-        self.lbl_net = ttk.Label(self, text="↓ 0K ↑ 0K", font=font_cfg, width=18)
+        self.lbl_net = ttk.Label(self, text="↓0K ↑0K", font=f_cfg, width=16)
         self.lbl_net.pack(side=tk.LEFT, padx=2)
         self.update_stats()
 
     def set_tasks(self, count):
-        self.active_tasks = count
-        self.lbl_task.config(text=f"Tasks: {self.active_tasks}")
+        self.lbl_task.config(text=f"T: {count}")
 
     def update_stats(self):
         if psutil is None: return
         try:
-            disk = psutil.disk_usage('/')
-            self.lbl_disk.config(text=f"D: {disk.percent}%")
-            mem = psutil.virtual_memory()
-            self.lbl_mem.config(text=f"M: {mem.percent}%")
-            current_net = psutil.net_io_counters()
-            current_time = time.time()
-            dt = current_time - self.last_time
+            d = psutil.disk_usage('/'); self.lbl_disk.config(text=f"D: {d.percent}%")
+            m = psutil.virtual_memory(); self.lbl_mem.config(text=f"M: {m.percent}%")
+            curr_net = psutil.net_io_counters(); curr_t = time.time(); dt = curr_t - self.last_time
             if dt > 0:
-                down_speed = (current_net.bytes_recv - self.last_net_io.bytes_recv) / dt
-                up_speed = (current_net.bytes_sent - self.last_net_io.bytes_sent) / dt
-                self.lbl_net.config(text=f"↓{self._format_speed(down_speed)} ↑{self._format_speed(up_speed)}")
-                self.last_net_io = current_net
-                self.last_time = current_time
+                ds = (curr_net.bytes_recv - self.last_net_io.bytes_recv) / dt
+                us = (curr_net.bytes_sent - self.last_net_io.bytes_sent) / dt
+                self.lbl_net.config(text=f"↓{self._fmt(ds)} ↑{self._fmt(us)}")
+                self.last_net_io = curr_net; self.last_time = curr_t
         except: pass
         self.after(1000, self.update_stats)
 
-    def _format_speed(self, bytes_sec):
-        if bytes_sec < 1024: return f"{int(bytes_sec)}B"
-        elif bytes_sec < 1024**2: return f"{bytes_sec/1024:.0f}K"
-        else: return f"{bytes_sec/1024**2:.1f}M"
+    def _fmt(self, b):
+        if b < 1024: return f"{int(b)}B"
+        elif b < 1024**2: return f"{b/1024:.0f}K"
+        else: return f"{b/1024**2:.1f}M"
 
 class ExplorerUI(ttk.Frame):
     def __init__(self, parent, logic_handler):
@@ -158,66 +168,68 @@ class ExplorerUI(ttk.Frame):
         self.is_searching = False
         self.sort_reverse = False
         self.running_threads = 0 
-        
-        # NEW: Cancellation event to cull threads
         self.cancel_event = threading.Event()
+        self.fav_file = "favorites.json" # REASON: Permanent storage for favorites slots
         
         self._setup_layout()
         self._setup_context_menu() 
         self._bind_events()
+        self._load_favorites() # REASON: Initialization of memory slots from disk
         self.load_path(self.current_path)
 
     def _setup_layout(self):
         self.pack(fill=tk.BOTH, expand=True)
-        top_container = ttk.Frame(self, padding=(5, 5))
+        
+        # --- Top Row (Nav + Monitor) ---
+        top_container = ttk.Frame(self, padding=(5, 2))
         top_container.pack(fill=tk.X)
-
         nav_frame = ttk.Frame(top_container)
         nav_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
         ttk.Button(nav_frame, text="Up", command=self.go_up, width=4).pack(side=tk.LEFT, padx=(0, 5))
         self.path_var = tk.StringVar()
-        self.path_entry = ttk.Entry(nav_frame, textvariable=self.path_var)
-        self.path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        
+        ttk.Entry(nav_frame, textvariable=self.path_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         ttk.Label(nav_frame, text="S:", font=("Helvetica", 10)).pack(side=tk.LEFT)
-        self.search_var = tk.StringVar()
-        self.search_entry = ttk.Entry(nav_frame, textvariable=self.search_var, width=12)
+        self.search_var = tk.StringVar(); self.search_entry = ttk.Entry(nav_frame, textvariable=self.search_var, width=12)
         self.search_entry.pack(side=tk.LEFT, padx=(2, 5))
-        
-        self.search_btn = ttk.Button(nav_frame, text="Go", command=self.perform_search, width=4)
-        self.search_btn.pack(side=tk.LEFT)
+        ttk.Button(nav_frame, text="Go", command=self.perform_search, width=4).pack(side=tk.LEFT)
         self.clear_btn = ttk.Button(nav_frame, text="X", width=2, command=self.clear_search, state=tk.DISABLED)
         self.clear_btn.pack(side=tk.LEFT, padx=(2, 0))
+        monitor_frame = ttk.Frame(top_container); monitor_frame.pack(side=tk.RIGHT, padx=(5, 0))
+        self.monitor = SystemMonitor(monitor_frame); self.monitor.pack(side=tk.LEFT)
 
-        monitor_frame = ttk.Frame(top_container)
-        monitor_frame.pack(side=tk.RIGHT, padx=(5, 0))
-        ttk.Separator(monitor_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=2)
-        self.monitor = SystemMonitor(monitor_frame)
-        self.monitor.pack(side=tk.LEFT)
+        # --- REASON FOR ADDITION: New Memory Slot Bar for directory persistence ---
+        mem_frame = ttk.Frame(self, padding=(5, 0, 5, 5))
+        mem_frame.pack(fill=tk.X)
+        ttk.Label(mem_frame, text="Memory slots:", font=("Helvetica", 9, "italic")).pack(side=tk.LEFT, padx=(5, 5))
+        
+        self.mem_buttons = []
+        self.mem_tips = []
+        for i in range(4):
+            btn = ttk.Button(mem_frame, text=f"[{i+1}] Empty", width=12)
+            btn.pack(side=tk.LEFT, padx=2)
+            # REASON: Left Click to navigate, Right Click to save folder/selection
+            btn.configure(command=lambda idx=i: self._jump_to_favorite(idx))
+            btn.bind("<Button-2>", lambda e, idx=i: self._save_to_favorite(idx)) # macOS trackpad
+            btn.bind("<Button-3>", lambda e, idx=i: self._save_to_favorite(idx)) # Right click mouse
+            
+            tip = ToolTip(btn, "")
+            self.mem_buttons.append(btn)
+            self.mem_tips.append(tip)
 
         self.paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        # REASON FOR COMMENTING: Geometry changed from 600 to 650 to fit the extra memory toolbar row.
+        # self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-
-        self.tree_frame = ttk.Frame(self.paned_window)
-        self.paned_window.add(self.tree_frame, weight=1)
-
-        columns = ("size", "modified")
-        self.tree = ttk.Treeview(self.tree_frame, columns=columns, selectmode="browse")
+        
+        self.tree_frame = ttk.Frame(self.paned_window); self.paned_window.add(self.tree_frame, weight=1)
+        cols = ("size", "modified")
+        self.tree = ttk.Treeview(self.tree_frame, columns=cols, selectmode="browse")
         self.tree.heading("#0", text="Name", command=lambda: self._sort_column("#0"))
-        self.tree.heading("size", text="Size", command=lambda: self._sort_column("size"))
-        self.tree.heading("modified", text="Modified", command=lambda: self._sort_column("modified"))
         self.tree.column("#0", stretch=True, width=250)
-        self.tree.column("size", width=80, anchor=tk.E)
-        self.tree.column("modified", width=130)
         self.tree.tag_configure('folder', foreground='#007AFF') 
-        self.tree.tag_configure('python', foreground='#2E7D32')
-        self.tree.tag_configure('config', foreground='#EF6C00')
         scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree.configure(yscrollcommand=scrollbar.set); self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
         self.preview_frame = ttk.Frame(self.paned_window, relief="sunken", padding=5)
         self.paned_window.add(self.preview_frame, weight=0)
         self.lbl_meta = ttk.Label(self.preview_frame, text="Select a file", font=("Helvetica", 10, "bold"))
@@ -225,143 +237,145 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview = tk.Text(self.preview_frame, wrap="none", height=10, width=35, font=("Menlo", 10), state=tk.DISABLED)
         self.txt_preview.pack(fill=tk.BOTH, expand=True)
 
+    def _load_favorites(self):
+        """Loads directory paths from JSON file to memory slots."""
+        if os.path.exists(self.fav_file):
+            try:
+                with open(self.fav_file, 'r') as f:
+                    self.favorites = json.load(f)
+            except: self.favorites = {}
+        else: self.favorites = {}
+        self._update_mem_ui()
+
+    def _save_to_favorite(self, idx):
+        """Saves current selection or active path to a memory slot."""
+        path = self.tree.focus() or self.current_path
+        # If a file is selected, save its parent folder instead
+        if not os.path.isdir(path):
+            path = os.path.dirname(path)
+        
+        self.favorites[str(idx)] = path
+        try:
+            with open(self.fav_file, 'w') as f:
+                json.dump(self.favorites, f)
+            self._update_mem_ui()
+            # Visual feedback on save
+            self.mem_buttons[idx].state(['pressed'])
+            self.after(100, lambda: self.mem_buttons[idx].state(['!pressed']))
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not save favorite: {e}")
+
+    def _jump_to_favorite(self, idx):
+        """Navigates to the path stored in the memory slot."""
+        path = self.favorites.get(str(idx))
+        if path and os.path.exists(path):
+            self.load_path(path)
+        else:
+            messagebox.showinfo("Memory", "Slot is empty. Right-click to save a folder here.")
+
+    def _update_mem_ui(self):
+        """Updates button labels and tooltips based on current favorites data."""
+        for i in range(4):
+            path = self.favorites.get(str(i))
+            if path:
+                # REASON: Extract folder name for button, limit length for clean UI
+                folder_name = os.path.basename(path) or path
+                self.mem_buttons[i].config(text=f"[{i+1}] {folder_name[:10]}")
+                # REASON: Update tooltip text for hover behavior
+                self.mem_tips[i].text = path
+            else:
+                self.mem_buttons[i].config(text=f"[{i+1}] Empty")
+                self.mem_tips[i].text = "Empty slot - Right-click to save folder"
+
     def _update_task_status(self, delta):
         self.running_threads += delta
         self.monitor.set_tasks(max(0, self.running_threads))
 
     def load_path(self, path):
-        # NEW: Signal existing threads to stop before starting a new one
-        self.cancel_event.set()
-        self.cancel_event = threading.Event()
-        
+        self.cancel_event.set(); self.cancel_event = threading.Event()
         self._update_task_status(1)
-        def bg_load():
-            items = self.logic.list_directory(path)
-            self.after(0, lambda: self._finish_load(items, path))
-            
-        threading.Thread(target=bg_load, daemon=True).start()
+        threading.Thread(target=lambda: self._bg_load(path), daemon=True).start()
+
+    def _bg_load(self, path):
+        items = self.logic.list_directory(path)
+        self.after(0, lambda: self._finish_load(items, path))
 
     def _finish_load(self, items, path):
         if items is not None:
-            self.current_path = path
-            self.path_var.set(path)
-            self._populate_tree(items)
+            self.current_path = path; self.path_var.set(path); self._populate_tree(items)
         self._update_task_status(-1)
 
     def perform_search(self):
+        # REASON FOR COMMENTING: Python syntax error; 'if' blocks cannot be placed on the 
+        # same line as a semicolon-separated statement.
+        # q = self.search_var.get().strip(); if not q: return
+        
         q = self.search_var.get().strip()
-        if not q: return
+        if not q: 
+            return
+            
         self.is_searching = True
         self.clear_btn.config(state=tk.NORMAL)
-        
-        # NEW: Cull any existing search threads
         self.cancel_event.set()
         self.cancel_event = threading.Event()
-        
         self._update_task_status(1)
-        def bg_search():
-            # Pass the cancellation event to the handler
-            results = self.logic.search_files(self.current_path, q, cancel_event=self.cancel_event)
-            if results is not None: # None means it was canceled
-                self.after(0, lambda: self._finish_search(results))
-            else:
-                self.after(0, lambda: self._update_task_status(-1))
-            
-        threading.Thread(target=bg_search, daemon=True).start()
+        threading.Thread(target=lambda: self._bg_search(q), daemon=True).start()
 
-    def _finish_search(self, results):
-        self._populate_tree(results)
+    def _bg_search(self, q):
+        res = self.logic.search_files(self.current_path, q, cancel_event=self.cancel_event)
+        self.after(0, lambda: self._finish_search(res))
+
+    def _finish_search(self, res):
+        if res is not None: self._populate_tree(res)
         self._update_task_status(-1)
 
     def clear_search(self):
-        self.cancel_event.set() # Kill active search immediately
-        self.is_searching = False
-        self.search_var.set("")
-        self.clear_btn.config(state=tk.DISABLED)
-        self.load_path(self.current_path)
+        self.cancel_event.set(); self.is_searching = False; self.search_var.set("")
+        self.clear_btn.config(state=tk.DISABLED); self.load_path(self.current_path)
 
     def _setup_context_menu(self):
         self.context_menu = tk.Menu(self, tearoff=0)
-        self.context_menu.add_command(label="Reveal in Finder", command=self.reveal_in_finder)
-        self.context_menu.add_command(label="Copy Path", command=self.copy_path_to_clipboard)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Open in Terminal", command=self.open_in_terminal)
+        self.context_menu.add_command(label="Reveal in Finder", command=lambda: subprocess.run(["open", "-R", self.tree.focus()]))
+        self.context_menu.add_command(label="Copy Path", command=lambda: (self.clipboard_clear(), self.clipboard_append(self.tree.focus())))
 
     def _bind_events(self):
-        self.tree.bind("<Double-1>", self.on_double_click)
-        self.tree.bind("<Return>", self.on_double_click)
-        self.tree.bind("<<TreeviewSelect>>", self.on_select)
+        self.tree.bind("<Double-1>", lambda e: self._on_dbclick())
+        self.tree.bind("<Return>", lambda e: self._on_dbclick())
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self.update_preview(self.tree.focus()))
         self.search_entry.bind("<Return>", lambda e: self.perform_search())
-        self.tree.bind("<Button-2>", self.show_context_menu)
-        self.tree.bind("<Button-3>", self.show_context_menu)
+        self.tree.bind("<Button-2>", self._show_ctx); self.tree.bind("<Button-3>", self._show_ctx)
 
-    def show_context_menu(self, event):
-        item = self.tree.identify_row(event.y)
-        if item:
-            self.tree.selection_set(item) 
-            self.context_menu.post(event.x_root, event.y_root)
+    def _show_ctx(self, e):
+        row = self.tree.identify_row(e.y)
+        if row: self.tree.selection_set(row); self.context_menu.post(e.x_root, e.y_root)
 
-    def reveal_in_finder(self):
-        path = self.tree.focus()
-        if path: subprocess.run(["open", "-R", path])
-
-    def copy_path_to_clipboard(self):
-        path = self.tree.focus()
-        if path:
-            self.clipboard_clear()
-            self.clipboard_append(path)
-
-    def open_in_terminal(self):
-        path = self.tree.focus()
-        if path:
-            target = path if os.path.isdir(path) else os.path.dirname(path)
-            subprocess.run(["open", "-a", "Terminal", target])
-
-    def _sort_column(self, col):
-        children = self.tree.get_children('')
-        def natural_key(text):
-            return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
-        def get_value(item_id):
-            if col == "#0": return natural_key(self.tree.item(item_id, 'text'))
-            return natural_key(self.tree.set(item_id, col))
-        self.sort_reverse = not self.sort_reverse
-        sorted_items = sorted(children, key=get_value, reverse=self.sort_reverse)
-        for index, item_id in enumerate(sorted_items):
-            self.tree.move(item_id, '', index)
-
-    def _populate_tree(self, items):
-        for item in self.tree.get_children(): self.tree.delete(item)
-        self.update_preview(None)
-        if items:
-            for item in items:
-                if not item: continue
-                display_name = f"📁 {item['name']}" if item['is_dir'] else f"📄 {item['name']}"
-                item_tags = []
-                if item['is_dir']: item_tags.append('folder')
-                elif item['name'].endswith('.py'): item_tags.append('python')
-                elif item['name'].endswith(('.json', '.yaml', '.yml', '.md')): item_tags.append('config')
-                self.tree.insert("", tk.END, iid=item['path'], text=display_name, 
-                                 values=(item['size'], item['modified']), tags=tuple(item_tags))
-
-    def on_double_click(self, event):
+    def _on_dbclick(self):
         sid = self.tree.focus()
         if sid and os.path.isdir(sid):
             if self.is_searching: self.clear_search()
             self.load_path(sid)
 
-    def on_select(self, event):
-        sid = self.tree.focus()
-        if sid: self.update_preview(sid)
-
     def update_preview(self, path):
-        self.txt_preview.config(state=tk.NORMAL)
-        self.txt_preview.delete(1.0, tk.END)
+        self.txt_preview.config(state=tk.NORMAL); self.txt_preview.delete(1.0, tk.END)
         if not path: self.lbl_meta.config(text="No Selection")
         else:
-            header, content = self.logic.get_preview_content(path)
-            self.lbl_meta.config(text=header)
-            self.txt_preview.insert(tk.END, content)
+            h, c = self.logic.get_preview_content(path); self.lbl_meta.config(text=h); self.txt_preview.insert(tk.END, c)
         self.txt_preview.config(state=tk.DISABLED)
+
+    def _sort_column(self, col):
+        children = self.tree.get_children(''); self.sort_reverse = not self.sort_reverse
+        def nk(t): return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', t)]
+        s_items = sorted(children, key=lambda i: nk(self.tree.item(i, 'text') if col=="#0" else self.tree.set(i, col)), reverse=self.sort_reverse)
+        for idx, iid in enumerate(s_items): self.tree.move(iid, '', idx)
+
+    def _populate_tree(self, items):
+        for i in self.tree.get_children(): self.tree.delete(i)
+        self.update_preview(None)
+        if items:
+            for itm in items:
+                d_name = f"📁 {itm['name']}" if itm['is_dir'] else f"📄 {itm['name']}"
+                tag = 'folder' if itm['is_dir'] else ''
+                self.tree.insert("", tk.END, iid=itm['path'], text=d_name, values=(itm['size'], itm['modified']), tags=(tag,))
 
     def go_up(self):
         if self.is_searching: self.clear_search()
@@ -370,8 +384,5 @@ class ExplorerUI(ttk.Frame):
             if p and os.path.exists(p): self.load_path(p)
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    root.title("MacExplorer Pro")
-    root.geometry("1100x600") 
-    app = ExplorerUI(root, FileSystemHandler())
-    root.mainloop()
+    root = tk.Tk(); root.title("MacExplorer Pro"); root.geometry("1100x650")
+    app = ExplorerUI(root, FileSystemHandler()); root.mainloop()

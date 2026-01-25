@@ -8,7 +8,7 @@ from datetime import datetime
 import re
 import subprocess
 import time
-import threading # NEW: For background tasks
+import threading 
 
 try:
     import psutil
@@ -16,7 +16,28 @@ except ImportError:
     psutil = None
 
 class FileSystemHandler:
-    # ... (Logic remains largely the same, optimized for thread calls) ...
+    # REASON FOR UPDATE: Added cancel_event check to allow "culling" of long-running searches
+    def search_files(self, start_path, query, cancel_event=None):
+        items = []
+        query = query.lower()
+        try:
+            for root, dirs, files in os.walk(start_path):
+                # Check if we should stop this thread
+                if cancel_event and cancel_event.is_set():
+                    return None
+
+                for d in dirs:
+                    if query in d.lower():
+                        items.append(self._create_item_dict_from_path(os.path.join(root, d)))
+                for f in files:
+                    if query in f.lower():
+                        items.append(self._create_item_dict_from_path(os.path.join(root, f)))
+                
+                if len(items) > 2000: break 
+        except Exception:
+            pass
+        return items
+
     def list_directory(self, path):
         items = []
         try:
@@ -26,23 +47,6 @@ class FileSystemHandler:
         except PermissionError:
             return None
         items.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
-        return items
-
-    def search_files(self, start_path, query, callback_progress=None):
-        """Modified to allow progress updates if needed."""
-        items = []
-        query = query.lower()
-        try:
-            for root, dirs, files in os.walk(start_path):
-                for d in dirs:
-                    if query in d.lower():
-                        items.append(self._create_item_dict_from_path(os.path.join(root, d)))
-                for f in files:
-                    if query in f.lower():
-                        items.append(self._create_item_dict_from_path(os.path.join(root, f)))
-                if len(items) > 2000: break # Increased limit for threads
-        except Exception:
-            pass
         return items
 
     def _create_item_dict(self, entry):
@@ -97,7 +101,7 @@ class FileSystemHandler:
 class SystemMonitor(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
-        self.active_tasks = 0 # NEW: Counter for background threads
+        self.active_tasks = 0 
         
         if psutil is None:
             self.lbl_error = ttk.Label(self, text="⚠️ Install 'psutil'", foreground="red", font=("Menlo", 9))
@@ -107,25 +111,18 @@ class SystemMonitor(ttk.Frame):
         self.last_net_io = psutil.net_io_counters()
         self.last_time = time.time()
         
-        # Reason for update: Reduced font size to 9 and adjusted widths to fit task counter
         font_cfg = ("Menlo", 9)
-        
         self.lbl_task = ttk.Label(self, text="Tasks: 0", font=font_cfg, width=10, foreground="#007AFF")
         self.lbl_task.pack(side=tk.LEFT, padx=2)
-
         self.lbl_disk = ttk.Label(self, text="D: --%", font=font_cfg, width=8)
         self.lbl_disk.pack(side=tk.LEFT, padx=2)
-        
         self.lbl_mem = ttk.Label(self, text="M: --%", font=font_cfg, width=8)
         self.lbl_mem.pack(side=tk.LEFT, padx=2)
-        
-        self.lbl_net = ttk.Label(self, text="↓ 0K ↑ 0K", font=font_cfg, width=20)
+        self.lbl_net = ttk.Label(self, text="↓ 0K ↑ 0K", font=font_cfg, width=18)
         self.lbl_net.pack(side=tk.LEFT, padx=2)
-        
         self.update_stats()
 
     def set_tasks(self, count):
-        """Update the visible thread counter."""
         self.active_tasks = count
         self.lbl_task.config(text=f"Tasks: {self.active_tasks}")
 
@@ -160,7 +157,10 @@ class ExplorerUI(ttk.Frame):
         self.current_path = os.path.expanduser("~")
         self.is_searching = False
         self.sort_reverse = False
-        self.running_threads = 0 # Track active background jobs
+        self.running_threads = 0 
+        
+        # NEW: Cancellation event to cull threads
+        self.cancel_event = threading.Event()
         
         self._setup_layout()
         self._setup_context_menu() 
@@ -227,25 +227,22 @@ class ExplorerUI(ttk.Frame):
 
     def _update_task_status(self, delta):
         self.running_threads += delta
-        self.monitor.set_tasks(self.running_threads)
+        self.monitor.set_tasks(max(0, self.running_threads))
 
     def load_path(self, path):
-        # REASON FOR COMMENTING: Original load_path was synchronous and caused the hang.
-        # items = self.logic.list_directory(path)
-        # self._populate_tree(items)
+        # NEW: Signal existing threads to stop before starting a new one
+        self.cancel_event.set()
+        self.cancel_event = threading.Event()
         
         self._update_task_status(1)
         def bg_load():
             items = self.logic.list_directory(path)
-            # Use after() to update UI from thread safely
             self.after(0, lambda: self._finish_load(items, path))
             
         threading.Thread(target=bg_load, daemon=True).start()
 
     def _finish_load(self, items, path):
-        if items is None:
-            messagebox.showerror("Error", "Permission Denied")
-        else:
+        if items is not None:
             self.current_path = path
             self.path_var.set(path)
             self._populate_tree(items)
@@ -257,16 +254,31 @@ class ExplorerUI(ttk.Frame):
         self.is_searching = True
         self.clear_btn.config(state=tk.NORMAL)
         
+        # NEW: Cull any existing search threads
+        self.cancel_event.set()
+        self.cancel_event = threading.Event()
+        
         self._update_task_status(1)
         def bg_search():
-            results = self.logic.search_files(self.current_path, q)
-            self.after(0, lambda: self._finish_search(results))
+            # Pass the cancellation event to the handler
+            results = self.logic.search_files(self.current_path, q, cancel_event=self.cancel_event)
+            if results is not None: # None means it was canceled
+                self.after(0, lambda: self._finish_search(results))
+            else:
+                self.after(0, lambda: self._update_task_status(-1))
             
         threading.Thread(target=bg_search, daemon=True).start()
 
     def _finish_search(self, results):
         self._populate_tree(results)
         self._update_task_status(-1)
+
+    def clear_search(self):
+        self.cancel_event.set() # Kill active search immediately
+        self.is_searching = False
+        self.search_var.set("")
+        self.clear_btn.config(state=tk.DISABLED)
+        self.load_path(self.current_path)
 
     def _setup_context_menu(self):
         self.context_menu = tk.Menu(self, tearoff=0)
@@ -342,7 +354,6 @@ class ExplorerUI(ttk.Frame):
         if sid: self.update_preview(sid)
 
     def update_preview(self, path):
-        # Preview is fast enough for small chunks, but could be threaded if we add syntax highlighting
         self.txt_preview.config(state=tk.NORMAL)
         self.txt_preview.delete(1.0, tk.END)
         if not path: self.lbl_meta.config(text="No Selection")
@@ -351,12 +362,6 @@ class ExplorerUI(ttk.Frame):
             self.lbl_meta.config(text=header)
             self.txt_preview.insert(tk.END, content)
         self.txt_preview.config(state=tk.DISABLED)
-
-    def clear_search(self):
-        self.is_searching = False
-        self.search_var.set("")
-        self.clear_btn.config(state=tk.DISABLED)
-        self.load_path(self.current_path)
 
     def go_up(self):
         if self.is_searching: self.clear_search()

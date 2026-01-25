@@ -48,6 +48,9 @@ class ToolTip:
             tw.destroy()
 
 class FileSystemHandler:
+    # REASON FOR ADDITION: Track chunk size for "Load More" functionality
+    CHUNK_SIZE = 2048
+
     def search_files(self, start_path, query, cancel_event=None):
         items = []
         query = query.lower()
@@ -100,23 +103,39 @@ class FileSystemHandler:
             size /= 1024
         return f"{size:.1f} PB"
 
-    def get_preview_content(self, path):
-        if not path or not os.path.exists(path): return "Info", "Item not found."
+    # REASON FOR COMMENTING: Original text_extensions was too limited; didn't support .sh or dotfiles.
+    # text_extensions = {'.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml'}
+
+    def get_preview_content(self, path, offset=0):
+        """Determines content for the preview pane with offset support and expanded extension support."""
+        if not path or not os.path.exists(path): return "Info", "Item not found.", False
         if os.path.isdir(path):
             try: count = len(os.listdir(path))
             except: count = "?"
-            return "Folder Info", f"Path: {path}\nContains: {count} items"
+            return "Folder Info", f"Path: {path}\nContains: {count} items", False
+        
         mime_type, _ = mimetypes.guess_type(path)
         stats = os.stat(path)
         header = f"File: {os.path.basename(path)}\nType: {mime_type or 'Unknown'}\nSize: {self._format_size(stats.st_size)}"
-        text_extensions = {'.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml'}
-        if (mime_type and mime_type.startswith('text')) or (os.path.splitext(path)[1].lower() in text_extensions):
+        
+        # REASON FOR ADDITION: Added .sh, .bash, .zsh, and dotfiles to the allowed preview list.
+        text_extensions = {
+            '.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml', 
+            '.sh', '.bash', '.zsh', '.env', '.gitignore', '.gitconfig', '.toml', '.lock', '.cfg'
+        }
+        
+        _, ext = os.path.splitext(path)
+        is_dotfile = os.path.basename(path).startswith('.')
+        
+        if (mime_type and mime_type.startswith('text')) or (ext.lower() in text_extensions) or is_dotfile:
             try:
                 with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                    content = f.read(2048)
-                    return header, content + ("\n\n... [Truncated] ..." if stats.st_size > 2048 else "")
-            except Exception as e: return header, f"Error reading text: {str(e)}"
-        return header, "[Binary File]\nNo preview available."
+                    f.seek(offset)
+                    content = f.read(self.CHUNK_SIZE)
+                    has_more = (offset + self.CHUNK_SIZE) < stats.st_size
+                    return header, content, has_more
+            except Exception as e: return header, f"Error reading text: {str(e)}", False
+        return header, "[Binary File]\nNo preview available.", False
 
 class SystemMonitor(ttk.Frame):
     def __init__(self, parent):
@@ -127,13 +146,18 @@ class SystemMonitor(ttk.Frame):
             return
         self.last_net_io = psutil.net_io_counters(); self.last_time = time.time()
         f_cfg = ("Menlo", 9)
+        
+        # REASON FOR ADDITION: Using a label reference to prevent jumping UI when numbers change.
         self.lbl_task = ttk.Label(self, text="T: 0", font=f_cfg, width=6, foreground="#007AFF")
         self.lbl_task.pack(side=tk.LEFT, padx=2)
-        self.lbl_disk = ttk.Label(self, text="D: --%", font=f_cfg, width=7)
+        
+        self.lbl_disk = ttk.Label(self, text="D: --%", font=f_cfg, width=8)
         self.lbl_disk.pack(side=tk.LEFT, padx=2)
-        self.lbl_mem = ttk.Label(self, text="M: --%", font=f_cfg, width=7)
+        
+        self.lbl_mem = ttk.Label(self, text="M: --%", font=f_cfg, width=8)
         self.lbl_mem.pack(side=tk.LEFT, padx=2)
-        self.lbl_net = ttk.Label(self, text="↓0K ↑0K", font=f_cfg, width=16)
+        
+        self.lbl_net = ttk.Label(self, text="↓0K ↑0K", font=f_cfg, width=18)
         self.lbl_net.pack(side=tk.LEFT, padx=2)
         self.update_stats()
 
@@ -169,6 +193,8 @@ class ExplorerUI(ttk.Frame):
         self.running_threads = 0 
         self.cancel_event = threading.Event()
         self.fav_file = "favorites.json"
+        self.preview_offset = 0
+        self.current_preview_file = None
         
         self._setup_layout()
         self._setup_context_menu() 
@@ -192,6 +218,8 @@ class ExplorerUI(ttk.Frame):
         ttk.Button(nav_frame, text="Go", command=self.perform_search, width=4).pack(side=tk.LEFT)
         self.clear_btn = ttk.Button(nav_frame, text="X", width=2, command=self.clear_search, state=tk.DISABLED)
         self.clear_btn.pack(side=tk.LEFT, padx=(2, 0))
+        
+        # REASON FOR UPDATE: Monitor frame separated for side-by-side layout in top container.
         monitor_frame = ttk.Frame(top_container); monitor_frame.pack(side=tk.RIGHT, padx=(5, 0))
         self.monitor = SystemMonitor(monitor_frame); self.monitor.pack(side=tk.LEFT)
 
@@ -215,23 +243,14 @@ class ExplorerUI(ttk.Frame):
         self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         
         self.tree_frame = ttk.Frame(self.paned_window); self.paned_window.add(self.tree_frame, weight=1)
-        
-        # REASON FOR COMMENTING: Restoring columns and headers so sort-by-click works again.
-        # cols = ("size", "modified")
-        # self.tree = ttk.Treeview(self.tree_frame, columns=cols, selectmode="browse")
-
         self.cols = ("size", "modified")
         self.tree = ttk.Treeview(self.tree_frame, columns=self.cols, selectmode="browse")
-        
-        # REASON FOR ADDITION: Definitive headings required for the _sort_column trigger.
         self.tree.heading("#0", text="Name ↑↓", command=lambda: self._sort_column("#0"))
         self.tree.heading("size", text="Size ↑↓", command=lambda: self._sort_column("size"))
         self.tree.heading("modified", text="Date Modified ↑↓", command=lambda: self._sort_column("modified"))
-
         self.tree.column("#0", stretch=True, width=250)
         self.tree.column("size", width=100, anchor=tk.E)
         self.tree.column("modified", width=150)
-        
         self.tree.tag_configure('folder', foreground='#007AFF') 
         scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set); self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -241,8 +260,14 @@ class ExplorerUI(ttk.Frame):
         self.paned_window.add(self.preview_frame, weight=0)
         self.lbl_meta = ttk.Label(self.preview_frame, text="Select a file", font=("Helvetica", 10, "bold"))
         self.lbl_meta.pack(anchor="nw", fill=tk.X, pady=(0, 5))
-        self.txt_preview = tk.Text(self.preview_frame, wrap="none", height=10, width=35, font=("Menlo", 10), state=tk.DISABLED)
+        
+        self.text_container = ttk.Frame(self.preview_frame)
+        self.text_container.pack(fill=tk.BOTH, expand=True)
+
+        self.txt_preview = tk.Text(self.text_container, wrap="none", height=10, width=35, font=("Menlo", 10), state=tk.DISABLED)
         self.txt_preview.pack(fill=tk.BOTH, expand=True)
+        
+        self.load_more_btn = ttk.Button(self.preview_frame, text="Load More...", command=self.load_next_chunk)
 
     def _load_favorites(self):
         if os.path.exists(self.fav_file):
@@ -304,13 +329,8 @@ class ExplorerUI(ttk.Frame):
         self._update_task_status(-1)
 
     def perform_search(self):
-        # REASON FOR COMMENTING: Syntax error; cannot combine semicolon statement and if-colon on one line.
-        # q = self.search_var.get().strip(); if not q: return
-        
         q = self.search_var.get().strip()
-        if not q:
-            return
-
+        if not q: return
         self.is_searching = True; self.clear_btn.config(state=tk.NORMAL)
         self.cancel_event.set(); self.cancel_event = threading.Event()
         self._update_task_status(1)
@@ -351,22 +371,43 @@ class ExplorerUI(ttk.Frame):
             self.load_path(sid)
 
     def update_preview(self, path):
-        self.txt_preview.config(state=tk.NORMAL); self.txt_preview.delete(1.0, tk.END)
-        if not path: self.lbl_meta.config(text="No Selection")
-        else:
-            h, c = self.logic.get_preview_content(path); self.lbl_meta.config(text=h); self.txt_preview.insert(tk.END, c)
+        """Initial load of a file preview with truncation check and button visibility."""
+        self.preview_offset = 0
+        self.current_preview_file = path
+        self.load_more_btn.pack_forget() 
+        
+        self.txt_preview.config(state=tk.NORMAL)
+        self.txt_preview.delete(1.0, tk.END)
+        
+        if not path: 
+            self.lbl_meta.config(text="No Selection")
+            self.txt_preview.config(state=tk.DISABLED)
+            return
+
+        h, c, has_more = self.logic.get_preview_content(path, self.preview_offset)
+        self.lbl_meta.config(text=h)
+        self.txt_preview.insert(tk.END, c)
         self.txt_preview.config(state=tk.DISABLED)
+        
+        if has_more:
+            self.load_more_btn.pack(side=tk.BOTTOM, fill=tk.X, pady=2)
+            self.preview_offset += self.logic.CHUNK_SIZE
+
+    def load_next_chunk(self):
+        """Appends next chunk to preview window."""
+        if not self.current_preview_file: return
+        h, c, has_more = self.logic.get_preview_content(self.current_preview_file, self.preview_offset)
+        self.txt_preview.config(state=tk.NORMAL); self.txt_preview.insert(tk.END, "\n" + "-"*10 + " [Next Chunk] " + "-"*10 + "\n"); self.txt_preview.insert(tk.END, c); self.txt_preview.config(state=tk.DISABLED); self.txt_preview.see(tk.END)
+        if not has_more: self.load_more_btn.pack_forget()
+        else: self.preview_offset += self.logic.CHUNK_SIZE
 
     def _sort_column(self, col):
         children = self.tree.get_children(''); self.sort_reverse = not self.sort_reverse
         def nk(t): return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(t))]
-        
-        # REASON FOR ADDITION: logic to extract text from Name (#0) vs sub-columns (Size/Modified).
         if col == "#0":
             s_items = sorted(children, key=lambda i: nk(self.tree.item(i, 'text')), reverse=self.sort_reverse)
         else:
             s_items = sorted(children, key=lambda i: nk(self.tree.set(i, col)), reverse=self.sort_reverse)
-            
         for idx, iid in enumerate(s_items): self.tree.move(iid, '', idx)
 
     def _populate_tree(self, items):

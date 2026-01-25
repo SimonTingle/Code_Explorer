@@ -9,9 +9,10 @@ import re
 import subprocess
 import time
 import threading
-import json # NEW: For permanent favorites storage
+import json 
 
 # 
+
 try:
     import psutil
 except ImportError:
@@ -19,7 +20,6 @@ except ImportError:
 
 # --- Helper for Hover Labels (ToolTips) ---
 class ToolTip:
-    """Creates a small pop-up window when the mouse hovers over a widget."""
     def __init__(self, widget, text):
         self.widget = widget
         self.text = text
@@ -48,7 +48,6 @@ class ToolTip:
             tw.destroy()
 
 class FileSystemHandler:
-    # ... (Handler logic remains unchanged for listing and searching) ...
     def search_files(self, start_path, query, cancel_event=None):
         items = []
         query = query.lower()
@@ -169,18 +168,17 @@ class ExplorerUI(ttk.Frame):
         self.sort_reverse = False
         self.running_threads = 0 
         self.cancel_event = threading.Event()
-        self.fav_file = "favorites.json" # REASON: Permanent storage for favorites slots
+        self.fav_file = "favorites.json"
         
         self._setup_layout()
         self._setup_context_menu() 
         self._bind_events()
-        self._load_favorites() # REASON: Initialization of memory slots from disk
+        self._load_favorites() 
         self.load_path(self.current_path)
 
     def _setup_layout(self):
         self.pack(fill=tk.BOTH, expand=True)
         
-        # --- Top Row (Nav + Monitor) ---
         top_container = ttk.Frame(self, padding=(5, 2))
         top_container.pack(fill=tk.X)
         nav_frame = ttk.Frame(top_container)
@@ -197,7 +195,6 @@ class ExplorerUI(ttk.Frame):
         monitor_frame = ttk.Frame(top_container); monitor_frame.pack(side=tk.RIGHT, padx=(5, 0))
         self.monitor = SystemMonitor(monitor_frame); self.monitor.pack(side=tk.LEFT)
 
-        # --- REASON FOR ADDITION: New Memory Slot Bar for directory persistence ---
         mem_frame = ttk.Frame(self, padding=(5, 0, 5, 5))
         mem_frame.pack(fill=tk.X)
         ttk.Label(mem_frame, text="Memory slots:", font=("Helvetica", 9, "italic")).pack(side=tk.LEFT, padx=(5, 5))
@@ -207,29 +204,39 @@ class ExplorerUI(ttk.Frame):
         for i in range(4):
             btn = ttk.Button(mem_frame, text=f"[{i+1}] Empty", width=12)
             btn.pack(side=tk.LEFT, padx=2)
-            # REASON: Left Click to navigate, Right Click to save folder/selection
             btn.configure(command=lambda idx=i: self._jump_to_favorite(idx))
-            btn.bind("<Button-2>", lambda e, idx=i: self._save_to_favorite(idx)) # macOS trackpad
-            btn.bind("<Button-3>", lambda e, idx=i: self._save_to_favorite(idx)) # Right click mouse
-            
+            btn.bind("<Button-2>", lambda e, idx=i: self._save_to_favorite(idx)) 
+            btn.bind("<Button-3>", lambda e, idx=i: self._save_to_favorite(idx)) 
             tip = ToolTip(btn, "")
             self.mem_buttons.append(btn)
             self.mem_tips.append(tip)
 
         self.paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        # REASON FOR COMMENTING: Geometry changed from 600 to 650 to fit the extra memory toolbar row.
-        # self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         
         self.tree_frame = ttk.Frame(self.paned_window); self.paned_window.add(self.tree_frame, weight=1)
-        cols = ("size", "modified")
-        self.tree = ttk.Treeview(self.tree_frame, columns=cols, selectmode="browse")
-        self.tree.heading("#0", text="Name", command=lambda: self._sort_column("#0"))
+        
+        # REASON FOR COMMENTING: Restoring columns and headers so sort-by-click works again.
+        # cols = ("size", "modified")
+        # self.tree = ttk.Treeview(self.tree_frame, columns=cols, selectmode="browse")
+
+        self.cols = ("size", "modified")
+        self.tree = ttk.Treeview(self.tree_frame, columns=self.cols, selectmode="browse")
+        
+        # REASON FOR ADDITION: Definitive headings required for the _sort_column trigger.
+        self.tree.heading("#0", text="Name ↑↓", command=lambda: self._sort_column("#0"))
+        self.tree.heading("size", text="Size ↑↓", command=lambda: self._sort_column("size"))
+        self.tree.heading("modified", text="Date Modified ↑↓", command=lambda: self._sort_column("modified"))
+
         self.tree.column("#0", stretch=True, width=250)
+        self.tree.column("size", width=100, anchor=tk.E)
+        self.tree.column("modified", width=150)
+        
         self.tree.tag_configure('folder', foreground='#007AFF') 
         scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set); self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
         self.preview_frame = ttk.Frame(self.paned_window, relief="sunken", padding=5)
         self.paned_window.add(self.preview_frame, weight=0)
         self.lbl_meta = ttk.Label(self.preview_frame, text="Select a file", font=("Helvetica", 10, "bold"))
@@ -238,7 +245,6 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.pack(fill=tk.BOTH, expand=True)
 
     def _load_favorites(self):
-        """Loads directory paths from JSON file to memory slots."""
         if os.path.exists(self.fav_file):
             try:
                 with open(self.fav_file, 'r') as f:
@@ -248,25 +254,20 @@ class ExplorerUI(ttk.Frame):
         self._update_mem_ui()
 
     def _save_to_favorite(self, idx):
-        """Saves current selection or active path to a memory slot."""
         path = self.tree.focus() or self.current_path
-        # If a file is selected, save its parent folder instead
         if not os.path.isdir(path):
             path = os.path.dirname(path)
-        
         self.favorites[str(idx)] = path
         try:
             with open(self.fav_file, 'w') as f:
                 json.dump(self.favorites, f)
             self._update_mem_ui()
-            # Visual feedback on save
             self.mem_buttons[idx].state(['pressed'])
             self.after(100, lambda: self.mem_buttons[idx].state(['!pressed']))
         except Exception as e:
             messagebox.showerror("Error", f"Could not save favorite: {e}")
 
     def _jump_to_favorite(self, idx):
-        """Navigates to the path stored in the memory slot."""
         path = self.favorites.get(str(idx))
         if path and os.path.exists(path):
             self.load_path(path)
@@ -274,14 +275,11 @@ class ExplorerUI(ttk.Frame):
             messagebox.showinfo("Memory", "Slot is empty. Right-click to save a folder here.")
 
     def _update_mem_ui(self):
-        """Updates button labels and tooltips based on current favorites data."""
         for i in range(4):
             path = self.favorites.get(str(i))
             if path:
-                # REASON: Extract folder name for button, limit length for clean UI
                 folder_name = os.path.basename(path) or path
                 self.mem_buttons[i].config(text=f"[{i+1}] {folder_name[:10]}")
-                # REASON: Update tooltip text for hover behavior
                 self.mem_tips[i].text = path
             else:
                 self.mem_buttons[i].config(text=f"[{i+1}] Empty")
@@ -306,18 +304,15 @@ class ExplorerUI(ttk.Frame):
         self._update_task_status(-1)
 
     def perform_search(self):
-        # REASON FOR COMMENTING: Python syntax error; 'if' blocks cannot be placed on the 
-        # same line as a semicolon-separated statement.
+        # REASON FOR COMMENTING: Syntax error; cannot combine semicolon statement and if-colon on one line.
         # q = self.search_var.get().strip(); if not q: return
         
         q = self.search_var.get().strip()
-        if not q: 
+        if not q:
             return
-            
-        self.is_searching = True
-        self.clear_btn.config(state=tk.NORMAL)
-        self.cancel_event.set()
-        self.cancel_event = threading.Event()
+
+        self.is_searching = True; self.clear_btn.config(state=tk.NORMAL)
+        self.cancel_event.set(); self.cancel_event = threading.Event()
         self._update_task_status(1)
         threading.Thread(target=lambda: self._bg_search(q), daemon=True).start()
 
@@ -364,8 +359,14 @@ class ExplorerUI(ttk.Frame):
 
     def _sort_column(self, col):
         children = self.tree.get_children(''); self.sort_reverse = not self.sort_reverse
-        def nk(t): return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', t)]
-        s_items = sorted(children, key=lambda i: nk(self.tree.item(i, 'text') if col=="#0" else self.tree.set(i, col)), reverse=self.sort_reverse)
+        def nk(t): return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(t))]
+        
+        # REASON FOR ADDITION: logic to extract text from Name (#0) vs sub-columns (Size/Modified).
+        if col == "#0":
+            s_items = sorted(children, key=lambda i: nk(self.tree.item(i, 'text')), reverse=self.sort_reverse)
+        else:
+            s_items = sorted(children, key=lambda i: nk(self.tree.set(i, col)), reverse=self.sort_reverse)
+            
         for idx, iid in enumerate(s_items): self.tree.move(iid, '', idx)
 
     def _populate_tree(self, items):

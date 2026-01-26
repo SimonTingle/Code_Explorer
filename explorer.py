@@ -17,35 +17,47 @@ try:
 except ImportError:
     psutil = None
 
-# --- Helper for Hover Labels (ToolTips) ---
 class ToolTip:
     def __init__(self, widget, text=""):
         self.widget = widget
         self.text = text
         self.tip_window = None
+        self.label = None
 
     def show_tip(self, x=None, y=None, text=None):
+        """Manually show or update tip at specific coordinates."""
         if text: self.text = text
-        if self.tip_window or not self.text: return
+        
+        if not self.text:
+            self.hide_tip()
+            return
         
         if x is None or y is None:
             x, y, cx, cy = self.widget.bbox("insert")
             x = x + self.widget.winfo_rootx() + 25
             y = y + cy + self.widget.winfo_rooty() + 25
         
-        self.tip_window = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(1)
-        tw.wm_geometry("+%d+%d" % (x, y))
-        label = tk.Label(tw, text=self.text, justify=tk.LEFT,
-                      background="#ffffe0", relief=tk.SOLID, borderwidth=1,
-                      font=("tahoma", "10", "normal"))
-        label.pack(ipadx=1)
+        if self.tip_window:
+            self.tip_window.wm_geometry(f"+{x}+{y}")
+            if self.label:
+                self.label.config(text=self.text)
+            return
+
+        self.tip_window = tk.Toplevel(self.widget)
+        self.tip_window.wm_overrideredirect(1)
+        self.tip_window.wm_geometry(f"+{x}+{y}")
+        
+        self.label = tk.Label(self.tip_window, text=self.text, justify=tk.LEFT,
+                              background="#ffffe0", foreground="#000000",
+                              relief=tk.SOLID, borderwidth=1,
+                              font=("tahoma", "10", "normal"))
+        self.label.pack(ipadx=1)
 
     def hide_tip(self, event=None):
-        tw = self.tip_window
-        self.tip_window = None
-        if tw:
-            tw.destroy()
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
+            self.label = None
 
 class AuditManager:
     DB_FILE = "audit_conformity_db.json"
@@ -72,15 +84,20 @@ class AuditManager:
     def get_blueprint_code(self, title):
         return self.blueprints.get(title, "")
 
+    # REASON FOR COMMENTING: Old difflib logic replaced by specific "3 consecutive words" requirement
+    # def find_conformity(self, content):
+    #     matches = []
+    #     threshold = 0.6 
+    #     for name, blueprint in self.blueprints.items():
+    #         if len(blueprint) > len(content) * 2: continue
+    #         matcher = difflib.SequenceMatcher(None, content, blueprint)
+    #         for i, j, n in matcher.get_matching_blocks():
+    #             if n > 15: 
+    #                 matches.append((i, i + n, name))
+    #     return matches
+
     def find_conformity(self, content):
-        """
-        Scans content for EXACT sequences of 3 consecutive words that match any blueprint.
-        Returns a list of dicts: {'start': int, 'end': int, 'title': str}
-        """
         matches = []
-        
-        # Helper to tokenize text into words with byte offsets
-        # Returns list of (word, start_index, end_index)
         def get_tokens(text):
             return [(m.group(), m.start(), m.end()) for m in re.finditer(r'\S+', text)]
 
@@ -88,7 +105,6 @@ class AuditManager:
         if len(content_tokens) < 3: return []
 
         blueprint_ngrams = {}
-        
         for title, code in self.blueprints.items():
             bp_tokens = get_tokens(code)
             if len(bp_tokens) < 3: continue
@@ -103,11 +119,9 @@ class AuditManager:
             t2, _, _ = content_tokens[i+1]
             t3, _, e3 = content_tokens[i+2]
             gram = f"{t1} {t2} {t3}"
-            
             if gram in blueprint_ngrams:
                 for title in blueprint_ngrams[gram]:
                     matches.append({'start': s1, 'end': e3, 'title': title})
-        
         return matches
 
 class SyntaxHighlighter:
@@ -133,7 +147,6 @@ class SyntaxHighlighter:
             if name != "background":
                 self.text_widget.tag_configure(name, foreground=color)
         
-        # REASON FOR UPDATE: "Glow" effect - Purple background, White text
         self.text_widget.tag_configure("audit_match", background="#6a0dad", foreground="#ffffff", underline=True)
 
         self.text_widget.config(
@@ -383,7 +396,6 @@ class ExplorerUI(ttk.Frame):
         
         self.audit_manager = AuditManager()
         self.current_matches = []
-        # REASON FOR ADDITION: Thread safety lock for highlight application
         self.audit_lock = threading.Lock()
         
         self._setup_layout()
@@ -541,6 +553,32 @@ class ExplorerUI(ttk.Frame):
         self.wait_window(win)
         return result_container["code"]
 
+    # REASON FOR COMMENTING: Old single-step logic replaced by wizard_add_to_db
+    # def add_selection_to_audit_db(self):
+    #     try:
+    #         selected_text = self.txt_preview.get("sel.first", "sel.last")
+    #     except tk.TclError:
+    #         selected_text = self.txt_preview.get("1.0", tk.END).strip()
+    #     
+    #     if not selected_text or len(selected_text) < 5:
+    #         messagebox.showwarning("Audit DB", "Please select valid code text to add to the blueprint database.")
+    #         return
+    #
+    #     name = simpledialog.askstring("Add Blueprint", "Enter a TITLE for this code blueprint:")
+    #     if name:
+    #         self.audit_manager.add_blueprint(name, selected_text)
+    #         messagebox.showinfo("Success", f"Blueprint '{name}' added to audit database.")
+    #         self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
+
+    # REASON FOR COMMENTING: Old simple message box replaced by list_audit_db interactive window
+    # def list_audit_db_old(self):
+    #     titles = self.audit_manager.get_all_titles()
+    #     msg = "\n".join(titles) if titles else "Database is empty."
+    #     if len(titles) > 20:
+    #          self._ask_multiline("List Database", "Current Blueprints:", msg)
+    #     else:
+    #         messagebox.showinfo("List Database", f"Current Blueprints:\n\n{msg}")
+
     def list_audit_db(self):
         win = tk.Toplevel(self)
         win.title("Database Manager")
@@ -596,23 +634,17 @@ class ExplorerUI(ttk.Frame):
     #         self.txt_preview.tag_add("audit_match", tk_start, tk_end)
     #     self.txt_preview.config(state=tk.DISABLED)
 
-    # REASON FOR ADDITION: Threaded audit scan to prevent UI freezing on large files
     def run_audit_scan(self, content):
-        """Starts a background thread to scan for conformity."""
-        # Capture current file path to verify validity when thread finishes
         target_file = self.current_preview_file 
         threading.Thread(target=self._threaded_audit_scan, args=(content, target_file), daemon=True).start()
 
     def _threaded_audit_scan(self, content, target_file):
-        """Background worker for audit scan."""
         matches = self.audit_manager.find_conformity(content)
-        # Schedule result update on Main Thread
         self.after(0, lambda: self._apply_audit_results(matches, target_file))
 
     def _apply_audit_results(self, matches, target_file):
-        """Updates UI with audit matches, verifying we are still looking at the same file."""
         if self.current_preview_file != target_file:
-            return # User switched files, discard old results
+            return 
         
         self.current_matches = matches
         self.txt_preview.config(state=tk.NORMAL)
@@ -642,10 +674,10 @@ class ExplorerUI(ttk.Frame):
                 matches_here = list(set(matches_here))
 
                 if matches_here:
-                    titles = "\n- ".join(matches_here)
+                    titles = "\n".join(matches_here)
                     x = event.x_root + 15
                     y = event.y_root + 15
-                    self.audit_tip.show_tip(x, y, f"Linked Blueprints:\n- {titles}")
+                    self.audit_tip.show_tip(x, y, titles)
                     return
 
             self.audit_tip.hide_tip()

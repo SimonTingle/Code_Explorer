@@ -1,7 +1,7 @@
 import os
 import sys
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, simpledialog
 from tkinter import messagebox
 import mimetypes
 from datetime import datetime
@@ -10,6 +10,9 @@ import subprocess
 import time
 import threading
 import json 
+import difflib # REASON: Required for "common ancestry" text comparison
+
+# 
 
 try:
     import psutil
@@ -45,23 +48,66 @@ class ToolTip:
         if tw:
             tw.destroy()
 
-# REASON FOR ADDITION: New class to handle VSCode-style syntax highlighting
+# REASON FOR ADDITION: Handles the "Blueprint" code storage and comparison logic
+class AuditManager:
+    DB_FILE = "audit_conformity_db.json"
+
+    def __init__(self):
+        self.blueprints = self._load_db()
+
+    def _load_db(self):
+        if os.path.exists(self.DB_FILE):
+            try:
+                with open(self.DB_FILE, 'r') as f:
+                    return json.load(f)
+            except: return {}
+        return {}
+
+    def add_blueprint(self, name, code_block):
+        self.blueprints[name] = code_block
+        with open(self.DB_FILE, 'w') as f:
+            json.dump(self.blueprints, f, indent=4)
+
+    def find_conformity(self, content):
+        """
+        Compares content against all blueprints using SequenceMatcher.
+        Returns a list of (start_index, end_index, blueprint_name) for matches.
+        """
+        matches = []
+        # Threshold for "common ancestry" - e.g., 60% similarity in the block
+        threshold = 0.6 
+
+        for name, blueprint in self.blueprints.items():
+            # Quick check to avoid expensive diffs on totally unrelated files
+            if len(blueprint) > len(content) * 2: continue
+
+            matcher = difflib.SequenceMatcher(None, content, blueprint)
+            
+            # get_matching_blocks returns triples: i (content idx), j (blueprint idx), n (length)
+            for i, j, n in matcher.get_matching_blocks():
+                # Filter out tiny commonalities like single brackets or whitespace (e.g., len < 10 chars)
+                if n > 15: 
+                    # We found a chunk of common ancestry
+                    matches.append((i, i + n, name))
+        return matches
+
 class SyntaxHighlighter:
     """
     Analyzes text content and applies color tags based on language patterns.
     Mimics VSCode Dark theme.
     """
-    # VSCode Dark Theme Colors
     COLORS = {
         "normal": "#d4d4d4",
         "background": "#1e1e1e",
-        "keyword": "#569cd6",   # def, class, if, return
-        "string": "#ce9178",    # "string"
-        "comment": "#6a9955",   # # comment
-        "number": "#b5cea8",    # 123
-        "class": "#4ec9b0",     # ClassName
-        "function": "#dcdcaa",  # function_name
-        "decorator": "#dcdcaa"  # @decorator
+        "keyword": "#569cd6", 
+        "string": "#ce9178", 
+        "comment": "#6a9955", 
+        "number": "#b5cea8", 
+        "class": "#4ec9b0", 
+        "function": "#dcdcaa", 
+        "decorator": "#dcdcaa",
+        # REASON FOR ADDITION: Specific color for Audit Conformity matches
+        "audit_match": "#C586C0" # Light Purple for matched blueprints
     }
 
     def __init__(self, text_widget):
@@ -69,67 +115,51 @@ class SyntaxHighlighter:
         self._configure_tags()
 
     def _configure_tags(self):
-        """Define the color tags in the tkinter Text widget."""
         for name, color in self.COLORS.items():
             if name != "background":
                 self.text_widget.tag_configure(name, foreground=color)
         
-        # Configure the base look
+        # Configure audit tag specifically (maybe add background for visibility)
+        self.text_widget.tag_configure("audit_match", background="#3a3a3a", underline=True)
+
         self.text_widget.config(
             background=self.COLORS["background"],
             foreground=self.COLORS["normal"],
-            insertbackground="white", # Cursor color
-            selectbackground="#264f78", # Selection color
-            font=("Menlo", 10) # Monospace font is crucial for code
+            insertbackground="white",
+            selectbackground="#264f78",
+            font=("Menlo", 10)
         )
 
     def highlight(self, content, file_extension):
-        """Applies highlighting based on file extension."""
         self.text_widget.config(state=tk.NORMAL)
-        # Clear existing tags (optional, but good for safety)
         for tag in self.COLORS.keys():
             self.text_widget.tag_remove(tag, "1.0", tk.END)
 
         if file_extension in {'.py', '.pyw'}:
             self._highlight_python(content)
-        elif file_extension in {'.sh', '.bash', '.zsh', 'Dockerfile'}:
+        elif file_extension in {'Dockerfile', '.sh', '.bash', '.zsh'}:
             self._highlight_shell(content)
         elif file_extension in {'.json', '.js'}:
             self._highlight_json_js(content)
         else:
-            # Fallback for generic files: just highlight strings and numbers
             self._highlight_generic(content)
             
         self.text_widget.config(state=tk.DISABLED)
 
     def _apply_pattern(self, pattern, tag_name, content_str):
-        """Helper to find regex matches and apply tags."""
         for match in re.finditer(pattern, content_str, re.MULTILINE):
             start = f"1.0 + {match.start()} chars"
             end = f"1.0 + {match.end()} chars"
             self.text_widget.tag_add(tag_name, start, end)
 
     def _highlight_python(self, content):
-        # 1. Keywords
         kw_pattern = r"\b(def|class|if|else|elif|return|import|from|try|except|finally|for|while|in|is|not|and|or|as|with|pass|lambda|global|raise|continue|break)\b"
         self._apply_pattern(kw_pattern, "keyword", content)
-
-        # 2. Class Names (following 'class')
         self._apply_pattern(r"(?<=class\s)\w+", "class", content)
-        
-        # 3. Function Names (following 'def')
         self._apply_pattern(r"(?<=def\s)\w+", "function", content)
-
-        # 4. Decorators
         self._apply_pattern(r"@\w+", "decorator", content)
-
-        # 5. Numbers
         self._apply_pattern(r"\b\d+\b", "number", content)
-
-        # 6. Strings (Double and Single quotes) - Simple approximation
         self._apply_pattern(r"(\".*?\"|'.*?')", "string", content)
-
-        # 7. Comments (must be last to overwrite others if needed, though simple regex has limits)
         self._apply_pattern(r"#.*$", "comment", content)
 
     def _highlight_shell(self, content):
@@ -138,7 +168,6 @@ class SyntaxHighlighter:
         self._apply_pattern(r"(\".*?\"|'.*?')", "string", content)
         self._apply_pattern(r"#.*$", "comment", content)
         self._apply_pattern(r"\b\d+\b", "number", content)
-        # Dockerfile specific
         docker_kw = r"^(FROM|RUN|CMD|LABEL|MAINTAINER|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL)\b"
         self._apply_pattern(docker_kw, "keyword", content)
 
@@ -152,7 +181,6 @@ class SyntaxHighlighter:
     def _highlight_generic(self, content):
         self._apply_pattern(r"(\".*?\"|'.*?')", "string", content)
         self._apply_pattern(r"\b\d+\b", "number", content)
-
 
 class FileSystemHandler:
     CHUNK_SIZE = 2048
@@ -339,12 +367,15 @@ class ExplorerUI(ttk.Frame):
         self.preview_offset = 0
         self.current_preview_file = None
         
+        # REASON FOR ADDITION: Initialize Audit Manager
+        self.audit_manager = AuditManager()
+        
         self._setup_layout()
+        self._setup_menus() # REASON: VSCode-style menu bar
         self._setup_context_menu() 
         self._bind_events()
         self._load_favorites() 
         
-        # REASON FOR ADDITION: Initialize Highlighter
         self.highlighter = SyntaxHighlighter(self.txt_preview)
         
         self.load_path(self.current_path)
@@ -415,14 +446,7 @@ class ExplorerUI(ttk.Frame):
         self.text_container = ttk.Frame(self.preview_frame)
         self.text_container.pack(fill=tk.BOTH, expand=True)
 
-        # REASON FOR COMMENTING: Old Text widget definition without wrapping/scroll support
-        # self.txt_preview = tk.Text(self.text_container, wrap="none", height=10, width=35, font=("Menlo", 10), state=tk.DISABLED)
-        # self.txt_preview.pack(fill=tk.BOTH, expand=True)
-
-        # REASON FOR UPDATE: Configure Text widget for code view (no wrap, dark bg via class, horiz scroll)
         self.txt_preview = tk.Text(self.text_container, wrap="none", height=10, width=35, state=tk.DISABLED)
-        
-        # Add Horizontal Scrollbar
         self.h_scroll = ttk.Scrollbar(self.text_container, orient=tk.HORIZONTAL, command=self.txt_preview.xview)
         self.txt_preview.configure(xscrollcommand=self.h_scroll.set)
         
@@ -430,6 +454,66 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.load_more_btn = ttk.Button(self.preview_frame, text="Load More...", command=self.load_next_chunk)
+
+    # REASON FOR ADDITION: New VSCode-style Menu Bar
+    def _setup_menus(self):
+        menubar = tk.Menu(self.master)
+        
+        # File Menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="New Window", state=tk.DISABLED)
+        file_menu.add_separator()
+        # REASON: User requested "Add to database" nested in File menu
+        file_menu.add_command(label="Add to Audit Database...", command=self.add_selection_to_audit_db)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.master.quit)
+        menubar.add_cascade(label="File", menu=file_menu)
+        
+        # Placeholder Menus to match VSCode request
+        for menu_name in ["Edit", "Selection", "View", "Go", "Run"]:
+            dummy_menu = tk.Menu(menubar, tearoff=0)
+            dummy_menu.add_command(label=f"{menu_name} Action", state=tk.DISABLED)
+            menubar.add_cascade(label=menu_name, menu=dummy_menu)
+            
+        self.master.config(menu=menubar)
+
+    def add_selection_to_audit_db(self):
+        """Adds currently selected text in preview to the audit database."""
+        try:
+            # Check if text is selected
+            selected_text = self.txt_preview.get("sel.first", "sel.last")
+        except tk.TclError:
+            # If no selection, ask if they want to add the whole file content loaded so far
+            selected_text = self.txt_preview.get("1.0", tk.END).strip()
+        
+        if not selected_text or len(selected_text) < 5:
+            messagebox.showwarning("Audit DB", "Please select valid code text to add to the blueprint database.")
+            return
+
+        name = simpledialog.askstring("Add Blueprint", "Enter a name for this code blueprint:")
+        if name:
+            self.audit_manager.add_blueprint(name, selected_text)
+            messagebox.showinfo("Success", f"Blueprint '{name}' added to audit database.")
+            # Trigger re-highlight to show it immediately if it matches itself
+            self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
+
+    def run_audit_scan(self, content):
+        """Scans content for blueprint matches and highlights them."""
+        matches = self.audit_manager.find_conformity(content)
+        self.txt_preview.config(state=tk.NORMAL)
+        
+        # Remove old audit tags if any
+        self.txt_preview.tag_remove("audit_match", "1.0", tk.END)
+        
+        for start_idx, end_idx, name in matches:
+            # difflib returns indices, we need to map to tk text indices "line.char"
+            # Since map is complex, we use a simpler approach: get_matching_blocks is based on the string 'content'
+            # We can use '1.0 + X chars' format
+            tk_start = f"1.0 + {start_idx} chars"
+            tk_end = f"1.0 + {end_idx} chars"
+            self.txt_preview.tag_add("audit_match", tk_start, tk_end)
+            
+        self.txt_preview.config(state=tk.DISABLED)
 
     def _load_favorites(self):
         if os.path.exists(self.fav_file):
@@ -572,12 +656,13 @@ class ExplorerUI(ttk.Frame):
         self.lbl_meta.config(text=h)
         self.txt_preview.insert(tk.END, c)
         
-        # REASON FOR ADDITION: Trigger Syntax Highlighting
         _, ext = os.path.splitext(path)
-        # Check for known filenames without extension (Dockerfile)
         if os.path.basename(path) in {'Dockerfile', 'Makefile', 'Jenkinsfile'}:
             ext = 'Dockerfile'
         self.highlighter.highlight(c, ext)
+
+        # REASON FOR ADDITION: Auto-run audit scan on new content
+        self.run_audit_scan(c)
 
         self.txt_preview.config(state=tk.DISABLED)
         
@@ -596,14 +681,10 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.insert(tk.END, "\n" + "-"*10 + " [Next Chunk] " + "-"*10 + "\n")
         self.txt_preview.insert(tk.END, c)
         
-        # REASON FOR ADDITION: Highlight the appended chunk
-        _, ext = os.path.splitext(self.current_preview_file)
-        # Re-highlight full content (simpler for regex consistency) or just append
-        # For simplicity in this script, we re-highlight, though efficient lexers stream it.
-        # Since this is a simple regex highlighter, we can just highlight the new part or re-run.
-        # Re-running on full text is safer for context.
         full_content = self.txt_preview.get("1.0", tk.END)
+        _, ext = os.path.splitext(self.current_preview_file)
         self.highlighter.highlight(full_content, ext)
+        self.run_audit_scan(full_content)
         
         self.txt_preview.config(state=tk.DISABLED)
         self.txt_preview.see(tk.END)

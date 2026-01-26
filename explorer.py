@@ -10,9 +10,7 @@ import subprocess
 import time
 import threading
 import json 
-import difflib # REASON: Required for "common ancestry" text comparison
-
-# 
+import difflib 
 
 try:
     import psutil
@@ -21,19 +19,25 @@ except ImportError:
 
 # --- Helper for Hover Labels (ToolTips) ---
 class ToolTip:
-    def __init__(self, widget, text):
+    def __init__(self, widget, text=""):
         self.widget = widget
         self.text = text
         self.tip_window = None
-        self.widget.bind("<Enter>", self.show_tip)
-        self.widget.bind("<Leave>", self.hide_tip)
+        # REASON FOR UPDATE: Tooltips now need to be triggered manually for the text widget
+        # self.widget.bind("<Enter>", self.show_tip)
+        # self.widget.bind("<Leave>", self.hide_tip)
 
-    def show_tip(self, event=None):
-        if self.tip_window or not self.text:
-            return
-        x, y, cx, cy = self.widget.bbox("insert")
-        x = x + self.widget.winfo_rootx() + 25
-        y = y + cy + self.widget.winfo_rooty() + 25
+    def show_tip(self, x=None, y=None, text=None):
+        """Manually show tip at specific coordinates."""
+        if text: self.text = text
+        if self.tip_window or not self.text: return
+        
+        # Calculate position if not provided
+        if x is None or y is None:
+            x, y, cx, cy = self.widget.bbox("insert")
+            x = x + self.widget.winfo_rootx() + 25
+            y = y + cy + self.widget.winfo_rooty() + 25
+        
         self.tip_window = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(1)
         tw.wm_geometry("+%d+%d" % (x, y))
@@ -48,7 +52,6 @@ class ToolTip:
         if tw:
             tw.destroy()
 
-# REASON FOR ADDITION: Handles the "Blueprint" code storage and comparison logic
 class AuditManager:
     DB_FILE = "audit_conformity_db.json"
 
@@ -68,34 +71,63 @@ class AuditManager:
         with open(self.DB_FILE, 'w') as f:
             json.dump(self.blueprints, f, indent=4)
 
+    # REASON FOR COMMENTING: Old difflib logic replaced by specific "3 consecutive words" requirement
+    # def find_conformity(self, content):
+    #     matches = []
+    #     threshold = 0.6 
+    #     for name, blueprint in self.blueprints.items():
+    #         if len(blueprint) > len(content) * 2: continue
+    #         matcher = difflib.SequenceMatcher(None, content, blueprint)
+    #         for i, j, n in matcher.get_matching_blocks():
+    #             if n > 15: 
+    #                 matches.append((i, i + n, name))
+    #     return matches
+
     def find_conformity(self, content):
         """
-        Compares content against all blueprints using SequenceMatcher.
-        Returns a list of (start_index, end_index, blueprint_name) for matches.
+        Scans content for sequences of 3 consecutive words that match any blueprint.
+        Returns a list of dicts: {'start': int, 'end': int, 'title': str}
         """
         matches = []
-        # Threshold for "common ancestry" - e.g., 60% similarity in the block
-        threshold = 0.6 
+        
+        # Helper to tokenize text into words with byte offsets
+        # Returns list of (word, start_index, end_index)
+        def get_tokens(text):
+            return [(m.group(), m.start(), m.end()) for m in re.finditer(r'\S+', text)]
 
-        for name, blueprint in self.blueprints.items():
-            # Quick check to avoid expensive diffs on totally unrelated files
-            if len(blueprint) > len(content) * 2: continue
+        content_tokens = get_tokens(content)
+        if len(content_tokens) < 3: return []
 
-            matcher = difflib.SequenceMatcher(None, content, blueprint)
+        # Build map of 3-grams in content for O(1) lookup
+        # Key: "word1 word2 word3", Value: List of (start_char, end_char)
+        content_ngrams = {}
+        for i in range(len(content_tokens) - 2):
+            t1, s1, _ = content_tokens[i]
+            t2, _, _ = content_tokens[i+1]
+            t3, _, e3 = content_tokens[i+2]
+            gram = f"{t1} {t2} {t3}"
+            if gram not in content_ngrams: content_ngrams[gram] = []
+            content_ngrams[gram].append((s1, e3))
+
+        # Check blueprints
+        for title, blueprint_code in self.blueprints.items():
+            bp_tokens = get_tokens(blueprint_code)
+            if len(bp_tokens) < 3: continue
             
-            # get_matching_blocks returns triples: i (content idx), j (blueprint idx), n (length)
-            for i, j, n in matcher.get_matching_blocks():
-                # Filter out tiny commonalities like single brackets or whitespace (e.g., len < 10 chars)
-                if n > 15: 
-                    # We found a chunk of common ancestry
-                    matches.append((i, i + n, name))
+            for i in range(len(bp_tokens) - 2):
+                t1 = bp_tokens[i][0]
+                t2 = bp_tokens[i+1][0]
+                t3 = bp_tokens[i+2][0]
+                gram = f"{t1} {t2} {t3}"
+                
+                if gram in content_ngrams:
+                    for (start, end) in content_ngrams[gram]:
+                        matches.append({'start': start, 'end': end, 'title': title})
+        
         return matches
 
 class SyntaxHighlighter:
-    """
-    Analyzes text content and applies color tags based on language patterns.
-    Mimics VSCode Dark theme.
-    """
+    """Analyzes text content and applies color tags based on language patterns."""
     COLORS = {
         "normal": "#d4d4d4",
         "background": "#1e1e1e",
@@ -106,8 +138,7 @@ class SyntaxHighlighter:
         "class": "#4ec9b0", 
         "function": "#dcdcaa", 
         "decorator": "#dcdcaa",
-        # REASON FOR ADDITION: Specific color for Audit Conformity matches
-        "audit_match": "#C586C0" # Light Purple for matched blueprints
+        "audit_match": "#C586C0" 
     }
 
     def __init__(self, text_widget):
@@ -119,8 +150,8 @@ class SyntaxHighlighter:
             if name != "background":
                 self.text_widget.tag_configure(name, foreground=color)
         
-        # Configure audit tag specifically (maybe add background for visibility)
-        self.text_widget.tag_configure("audit_match", background="#3a3a3a", underline=True)
+        # REASON FOR UPDATE: Audit match now has a background for visibility and underline
+        self.text_widget.tag_configure("audit_match", background="#4d1852", underline=True)
 
         self.text_widget.config(
             background=self.COLORS["background"],
@@ -367,17 +398,21 @@ class ExplorerUI(ttk.Frame):
         self.preview_offset = 0
         self.current_preview_file = None
         
-        # REASON FOR ADDITION: Initialize Audit Manager
         self.audit_manager = AuditManager()
+        # REASON FOR ADDITION: Store current matches for hover logic
+        self.current_matches = []
         
         self._setup_layout()
-        self._setup_menus() # REASON: VSCode-style menu bar
+        self._setup_menus() 
         self._setup_context_menu() 
         self._bind_events()
         self._load_favorites() 
         
         self.highlighter = SyntaxHighlighter(self.txt_preview)
         
+        # REASON FOR ADDITION: Tooltip for audit matches
+        self.audit_tip = ToolTip(self.txt_preview)
+
         self.load_path(self.current_path)
 
     def _setup_layout(self):
@@ -455,21 +490,16 @@ class ExplorerUI(ttk.Frame):
         
         self.load_more_btn = ttk.Button(self.preview_frame, text="Load More...", command=self.load_next_chunk)
 
-    # REASON FOR ADDITION: New VSCode-style Menu Bar
     def _setup_menus(self):
         menubar = tk.Menu(self.master)
-        
-        # File Menu
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="New Window", state=tk.DISABLED)
         file_menu.add_separator()
-        # REASON: User requested "Add to database" nested in File menu
         file_menu.add_command(label="Add to Audit Database...", command=self.add_selection_to_audit_db)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.master.quit)
         menubar.add_cascade(label="File", menu=file_menu)
         
-        # Placeholder Menus to match VSCode request
         for menu_name in ["Edit", "Selection", "View", "Go", "Run"]:
             dummy_menu = tk.Menu(menubar, tearoff=0)
             dummy_menu.add_command(label=f"{menu_name} Action", state=tk.DISABLED)
@@ -480,40 +510,83 @@ class ExplorerUI(ttk.Frame):
     def add_selection_to_audit_db(self):
         """Adds currently selected text in preview to the audit database."""
         try:
-            # Check if text is selected
             selected_text = self.txt_preview.get("sel.first", "sel.last")
         except tk.TclError:
-            # If no selection, ask if they want to add the whole file content loaded so far
             selected_text = self.txt_preview.get("1.0", tk.END).strip()
         
         if not selected_text or len(selected_text) < 5:
             messagebox.showwarning("Audit DB", "Please select valid code text to add to the blueprint database.")
             return
 
-        name = simpledialog.askstring("Add Blueprint", "Enter a name for this code blueprint:")
+        name = simpledialog.askstring("Add Blueprint", "Enter a TITLE for this code blueprint:")
         if name:
             self.audit_manager.add_blueprint(name, selected_text)
             messagebox.showinfo("Success", f"Blueprint '{name}' added to audit database.")
-            # Trigger re-highlight to show it immediately if it matches itself
             self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
 
     def run_audit_scan(self, content):
         """Scans content for blueprint matches and highlights them."""
-        matches = self.audit_manager.find_conformity(content)
-        self.txt_preview.config(state=tk.NORMAL)
+        # Get matches: list of {start, end, title}
+        self.current_matches = self.audit_manager.find_conformity(content)
         
-        # Remove old audit tags if any
+        self.txt_preview.config(state=tk.NORMAL)
         self.txt_preview.tag_remove("audit_match", "1.0", tk.END)
         
-        for start_idx, end_idx, name in matches:
-            # difflib returns indices, we need to map to tk text indices "line.char"
-            # Since map is complex, we use a simpler approach: get_matching_blocks is based on the string 'content'
-            # We can use '1.0 + X chars' format
-            tk_start = f"1.0 + {start_idx} chars"
-            tk_end = f"1.0 + {end_idx} chars"
+        for m in self.current_matches:
+            # Convert integer indices to Tkinter "1.0 + chars" format
+            tk_start = f"1.0 + {m['start']} chars"
+            tk_end = f"1.0 + {m['end']} chars"
             self.txt_preview.tag_add("audit_match", tk_start, tk_end)
             
         self.txt_preview.config(state=tk.DISABLED)
+
+    # REASON FOR ADDITION: Handle hover events over text
+    def _on_text_motion(self, event):
+        """Checks if mouse is over an audit match and shows tooltip."""
+        try:
+            index = self.txt_preview.index(f"@{event.x},{event.y}")
+            tags = self.txt_preview.tag_names(index)
+            
+            if "audit_match" in tags:
+                # Find which match corresponds to this index
+                # This is slightly expensive; we iterate to find the range.
+                # Convert tk index "line.char" to absolute char offset for comparison
+                # Note: This is tricky in Tkinter. 
+                # Simpler: Get the 'title' from our stored matches if index falls in range.
+                # Since mapping tk index back to absolute char count is hard without simple math:
+                # We will check if the text at this tag matches one of our stored titles.
+                
+                # Simplified approach: Just show "Conformity Found" or try to find exact title
+                # To do it right:
+                # 1. Get ranges of "audit_match" at this index
+                # 2. Map to self.current_matches
+                
+                # Let's show a generic valid tip first, or try to be smart
+                matches_here = []
+                # Tkinter doesn't easily give us the "tag range" at index without searching.
+                # We will use the 'current_matches' list.
+                
+                # Get char count of current index
+                count_res = self.txt_preview.count("1.0", index, "chars")
+                current_char_idx = count_res[0] if count_res else 0
+                
+                for m in self.current_matches:
+                    if m['start'] <= current_char_idx <= m['end']:
+                        matches_here.append(m['title'])
+                
+                if matches_here:
+                    titles = "\n".join(matches_here)
+                    # Show tooltip at mouse position
+                    x = event.x_root + 15
+                    y = event.y_root + 15
+                    self.audit_tip.show_tip(x, y, f"Blueprint Match:\n{titles}")
+                    return
+
+            # If not over a match, hide tip
+            self.audit_tip.hide_tip()
+            
+        except Exception:
+            self.audit_tip.hide_tip()
 
     def _load_favorites(self):
         if os.path.exists(self.fav_file):
@@ -596,7 +669,6 @@ class ExplorerUI(ttk.Frame):
         self.clear_btn.config(state=tk.DISABLED); self.load_path(self.current_path)
 
     def _setup_context_menu(self):
-        """Initializes the right-click context menu with macOS-specific terminal and refresh support."""
         self.context_menu = tk.Menu(self, tearoff=0)
         self.context_menu.add_command(label="Reveal in Finder", command=self.reveal_in_finder)
         self.context_menu.add_command(label="Copy Path", command=self.copy_path_to_clipboard)
@@ -613,7 +685,6 @@ class ExplorerUI(ttk.Frame):
         if path: self.clipboard_clear(); self.clipboard_append(path)
 
     def open_terminal_at_selection(self):
-        """Opens Terminal.app at the path of the selected item."""
         path = self.tree.focus()
         if path:
             target = path if os.path.isdir(path) else os.path.dirname(path)
@@ -626,6 +697,8 @@ class ExplorerUI(ttk.Frame):
         self.search_entry.bind("<Return>", lambda e: self.perform_search())
         self.tree.bind("<Button-2>", self._show_ctx)
         self.tree.bind("<Button-3>", self._show_ctx)
+        # REASON FOR ADDITION: Track mouse motion for hover tooltips
+        self.txt_preview.bind("<Motion>", self._on_text_motion)
 
     def _show_ctx(self, e):
         row = self.tree.identify_row(e.y)
@@ -638,76 +711,44 @@ class ExplorerUI(ttk.Frame):
             self.load_path(sid)
 
     def update_preview(self, path):
-        """Initial load of a file preview with truncation check and button visibility."""
-        self.preview_offset = 0
-        self.current_preview_file = path
-        self.load_more_btn.pack_forget()
-        self.copy_btn.pack_forget()
-        
-        self.txt_preview.config(state=tk.NORMAL)
-        self.txt_preview.delete(1.0, tk.END)
-        
-        if not path: 
-            self.lbl_meta.config(text="No Selection")
-            self.txt_preview.config(state=tk.DISABLED)
-            return
-
-        h, c, has_more = self.logic.get_preview_content(path, self.preview_offset)
-        self.lbl_meta.config(text=h)
-        self.txt_preview.insert(tk.END, c)
+        self.preview_offset = 0; self.current_preview_file = path; self.load_more_btn.pack_forget(); self.copy_btn.pack_forget(); self.txt_preview.config(state=tk.NORMAL); self.txt_preview.delete(1.0, tk.END)
+        if not path: self.lbl_meta.config(text="No Selection"); self.txt_preview.config(state=tk.DISABLED); return
+        h, c, has_more = self.logic.get_preview_content(path, self.preview_offset); self.lbl_meta.config(text=h); self.txt_preview.insert(tk.END, c)
         
         _, ext = os.path.splitext(path)
         if os.path.basename(path) in {'Dockerfile', 'Makefile', 'Jenkinsfile'}:
             ext = 'Dockerfile'
         self.highlighter.highlight(c, ext)
-
-        # REASON FOR ADDITION: Auto-run audit scan on new content
         self.run_audit_scan(c)
 
         self.txt_preview.config(state=tk.DISABLED)
         
-        if c and not c.startswith("["):
-            self.copy_btn.pack(side=tk.RIGHT, anchor="ne", padx=5)
-        
-        if has_more:
-            self.load_more_btn.pack(side=tk.BOTTOM, fill=tk.X, pady=2)
-            self.preview_offset += self.logic.CHUNK_SIZE
+        if c and not c.startswith("["): self.copy_btn.pack(side=tk.RIGHT, anchor="ne", padx=5)
+        if has_more: self.load_more_btn.pack(side=tk.BOTTOM, fill=tk.X, pady=2); self.preview_offset += self.logic.CHUNK_SIZE
 
     def load_next_chunk(self):
-        """Appends next chunk to preview window."""
         if not self.current_preview_file: return
         h, c, has_more = self.logic.get_preview_content(self.current_preview_file, self.preview_offset)
-        self.txt_preview.config(state=tk.NORMAL)
-        self.txt_preview.insert(tk.END, "\n" + "-"*10 + " [Next Chunk] " + "-"*10 + "\n")
-        self.txt_preview.insert(tk.END, c)
+        self.txt_preview.config(state=tk.NORMAL); self.txt_preview.insert(tk.END, "\n" + "-"*10 + " [Next Chunk] " + "-"*10 + "\n"); self.txt_preview.insert(tk.END, c)
         
         full_content = self.txt_preview.get("1.0", tk.END)
         _, ext = os.path.splitext(self.current_preview_file)
         self.highlighter.highlight(full_content, ext)
         self.run_audit_scan(full_content)
         
-        self.txt_preview.config(state=tk.DISABLED)
-        self.txt_preview.see(tk.END)
-        
+        self.txt_preview.config(state=tk.DISABLED); self.txt_preview.see(tk.END)
         if not has_more: self.load_more_btn.pack_forget()
         else: self.preview_offset += self.logic.CHUNK_SIZE
 
     def copy_preview_to_clipboard(self):
-        """Copies preview text content to clipboard."""
         content = self.txt_preview.get(1.0, tk.END)
-        if content.strip(): 
-            self.clipboard_clear()
-            self.clipboard_append(content)
-            self.copy_btn.config(text="Copied!")
-            self.after(1500, lambda: self.copy_btn.config(text="Copy"))
+        if content.strip(): self.clipboard_clear(); self.clipboard_append(content); self.copy_btn.config(text="Copied!"); self.after(1500, lambda: self.copy_btn.config(text="Copy"))
 
     def _sort_column(self, col):
         children = self.tree.get_children(''); self.sort_reverse = not self.sort_reverse
         def nk(t): return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(t))]
-        if col == "#0":
-            s_items = sorted(children, key=lambda i: nk(self.tree.item(i, 'text')), reverse=self.sort_reverse)
-        else:
-            s_items = sorted(children, key=lambda i: nk(self.tree.set(i, col)), reverse=self.sort_reverse)
+        if col == "#0": s_items = sorted(children, key=lambda i: nk(self.tree.item(i, 'text')), reverse=self.sort_reverse)
+        else: s_items = sorted(children, key=lambda i: nk(self.tree.set(i, col)), reverse=self.sort_reverse)
         for idx, iid in enumerate(s_items): self.tree.move(iid, '', idx)
 
     def _populate_tree(self, items):

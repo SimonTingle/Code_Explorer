@@ -25,7 +25,6 @@ class ToolTip:
         self.tip_window = None
 
     def show_tip(self, x=None, y=None, text=None):
-        """Manually show tip at specific coordinates."""
         if text: self.text = text
         if self.tip_window or not self.text: return
         
@@ -70,7 +69,9 @@ class AuditManager:
     def get_all_titles(self):
         return list(self.blueprints.keys())
 
-    # REASON FOR UPDATE: Refined logic to return specific token ranges for 3-word matches
+    def get_blueprint_code(self, title):
+        return self.blueprints.get(title, "")
+
     def find_conformity(self, content):
         """
         Scans content for EXACT sequences of 3 consecutive words that match any blueprint.
@@ -86,8 +87,6 @@ class AuditManager:
         content_tokens = get_tokens(content)
         if len(content_tokens) < 3: return []
 
-        # 1. Build a set of all 3-grams from all blueprints
-        # Key: "word1 word2 word3", Value: List of Titles containing this gram
         blueprint_ngrams = {}
         
         for title, code in self.blueprints.items():
@@ -99,7 +98,6 @@ class AuditManager:
                 if gram not in blueprint_ngrams: blueprint_ngrams[gram] = set()
                 blueprint_ngrams[gram].add(title)
 
-        # 2. Scan content for these grams
         for i in range(len(content_tokens) - 2):
             t1, s1, _ = content_tokens[i]
             t2, _, _ = content_tokens[i+1]
@@ -107,15 +105,12 @@ class AuditManager:
             gram = f"{t1} {t2} {t3}"
             
             if gram in blueprint_ngrams:
-                # We found a match!
-                # Create a match entry for *each* title that has this sequence
                 for title in blueprint_ngrams[gram]:
                     matches.append({'start': s1, 'end': e3, 'title': title})
         
         return matches
 
 class SyntaxHighlighter:
-    """Analyzes text content and applies color tags based on language patterns."""
     COLORS = {
         "normal": "#d4d4d4",
         "background": "#1e1e1e",
@@ -138,8 +133,8 @@ class SyntaxHighlighter:
             if name != "background":
                 self.text_widget.tag_configure(name, foreground=color)
         
-        # REASON FOR UPDATE: Using a distinct background color for audit matches
-        self.text_widget.tag_configure("audit_match", background="#511f5e", foreground="#ffffff", underline=True)
+        # REASON FOR UPDATE: "Glow" effect - Purple background, White text
+        self.text_widget.tag_configure("audit_match", background="#6a0dad", foreground="#ffffff", underline=True)
 
         self.text_widget.config(
             background=self.COLORS["background"],
@@ -388,6 +383,8 @@ class ExplorerUI(ttk.Frame):
         
         self.audit_manager = AuditManager()
         self.current_matches = []
+        # REASON FOR ADDITION: Thread safety lock for highlight application
+        self.audit_lock = threading.Lock()
         
         self._setup_layout()
         self._setup_menus() 
@@ -475,16 +472,13 @@ class ExplorerUI(ttk.Frame):
         
         self.load_more_btn = ttk.Button(self.preview_frame, text="Load More...", command=self.load_next_chunk)
 
-    # REASON FOR UPDATE: Implementing specific File -> Database menu structure
     def _setup_menus(self):
         menubar = tk.Menu(self.master)
         
-        # File Menu
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="New Window", state=tk.DISABLED)
         file_menu.add_separator()
         
-        # Database Submenu
         db_menu = tk.Menu(file_menu, tearoff=0)
         db_menu.add_command(label="Add Database", command=self.wizard_add_to_db)
         db_menu.add_command(label="List Database", command=self.list_audit_db)
@@ -494,7 +488,6 @@ class ExplorerUI(ttk.Frame):
         file_menu.add_command(label="Exit", command=self.master.quit)
         menubar.add_cascade(label="File", menu=file_menu)
         
-        # Placeholder Menus
         for menu_name in ["Edit", "Selection", "View", "Go", "Run"]:
             dummy_menu = tk.Menu(menubar, tearoff=0)
             dummy_menu.add_command(label=f"{menu_name} Action", state=tk.DISABLED)
@@ -502,33 +495,25 @@ class ExplorerUI(ttk.Frame):
             
         self.master.config(menu=menubar)
 
-    # REASON FOR ADDITION: New "Wizard" style flow for Adding to Database
     def wizard_add_to_db(self):
-        """Step 1: Get Title, Step 2: Get Code (Pre-filled from selection)."""
-        # Step 1: Title
         title = simpledialog.askstring("Add Database - Step 1/2", "Enter Title (Index Card):")
         if not title: return
 
-        # Step 2: Code Block (Principal Data)
-        # Try to get selection, else empty
         try:
             initial_code = self.txt_preview.get("sel.first", "sel.last")
         except tk.TclError:
-            initial_code = "" # Or self.txt_preview.get("1.0", tk.END) if you prefer default to all
+            initial_code = ""
 
-        # Custom Dialog for Code Input to allow editing
         code = self._ask_multiline("Add Database - Step 2/2", "Enter/Edit Code Block:", initial_code)
         
         if code and len(code.strip()) > 0:
             self.audit_manager.add_blueprint(title, code)
             messagebox.showinfo("Success", f"Saved '{title}' to database.")
-            # Re-scan current file
             self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
         else:
             messagebox.showwarning("Cancelled", "No code entered. Database entry cancelled.")
 
     def _ask_multiline(self, title, prompt, initial_value=""):
-        """Helper to create a simple popup window with a Text area."""
         win = tk.Toplevel(self)
         win.title(title)
         win.geometry("500x400")
@@ -557,29 +542,83 @@ class ExplorerUI(ttk.Frame):
         return result_container["code"]
 
     def list_audit_db(self):
-        """Shows a list of all titles in the DB."""
-        titles = self.audit_manager.get_all_titles()
-        msg = "\n".join(titles) if titles else "Database is empty."
-        # Using a text widget dialog for list if it's long, but messagebox is fine for now
-        if len(titles) > 20:
-             self._ask_multiline("List Database", "Current Blueprints:", msg)
-        else:
-            messagebox.showinfo("List Database", f"Current Blueprints:\n\n{msg}")
+        win = tk.Toplevel(self)
+        win.title("Database Manager")
+        win.geometry("400x500")
 
-    # REASON FOR COMMENTING: Old single-step logic replaced by wizard_add_to_db
-    # def add_selection_to_audit_db(self):
-    #     ...
+        list_frame = ttk.Frame(win, padding=10)
+        list_frame.pack(fill=tk.BOTH, expand=True)
 
-    def run_audit_scan(self, content):
-        """Scans content for blueprint matches and highlights them."""
-        # Get matches: list of {start, end, title}
-        self.current_matches = self.audit_manager.find_conformity(content)
+        lbl = ttk.Label(list_frame, text="Stored Blueprints:", font=("Helvetica", 10, "bold"))
+        lbl.pack(anchor="w", pady=(0, 5))
+
+        lb_frame = ttk.Frame(list_frame)
+        lb_frame.pack(fill=tk.BOTH, expand=True)
         
+        scrollbar = ttk.Scrollbar(lb_frame, orient=tk.VERTICAL)
+        lb = tk.Listbox(lb_frame, yscrollcommand=scrollbar.set, font=("Menlo", 10))
+        scrollbar.config(command=lb.yview)
+        
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        titles = sorted(self.audit_manager.get_all_titles())
+        for t in titles:
+            lb.insert(tk.END, t)
+
+        def edit_selected():
+            sel = lb.curselection()
+            if not sel: return
+            title = lb.get(sel[0])
+            current_code = self.audit_manager.get_blueprint_code(title)
+            new_code = self._ask_multiline(f"Edit '{title}'", "Edit Code Block:", current_code)
+            if new_code is not None:
+                self.audit_manager.add_blueprint(title, new_code)
+                messagebox.showinfo("Success", f"Updated '{title}'")
+                self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
+
+        btn_frame = ttk.Frame(win, padding=10)
+        btn_frame.pack(fill=tk.X)
+        
+        ttk.Button(btn_frame, text="Edit / View", command=edit_selected).pack(side=tk.RIGHT)
+        ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side=tk.RIGHT, padx=5)
+        
+        lb.bind("<Double-1>", lambda e: edit_selected())
+
+    # REASON FOR COMMENTING: Replaced synchronous logic with threaded logic below
+    # def run_audit_scan(self, content):
+    #     self.current_matches = self.audit_manager.find_conformity(content)
+    #     self.txt_preview.config(state=tk.NORMAL)
+    #     self.txt_preview.tag_remove("audit_match", "1.0", tk.END)
+    #     for m in self.current_matches:
+    #         tk_start = f"1.0 + {m['start']} chars"
+    #         tk_end = f"1.0 + {m['end']} chars"
+    #         self.txt_preview.tag_add("audit_match", tk_start, tk_end)
+    #     self.txt_preview.config(state=tk.DISABLED)
+
+    # REASON FOR ADDITION: Threaded audit scan to prevent UI freezing on large files
+    def run_audit_scan(self, content):
+        """Starts a background thread to scan for conformity."""
+        # Capture current file path to verify validity when thread finishes
+        target_file = self.current_preview_file 
+        threading.Thread(target=self._threaded_audit_scan, args=(content, target_file), daemon=True).start()
+
+    def _threaded_audit_scan(self, content, target_file):
+        """Background worker for audit scan."""
+        matches = self.audit_manager.find_conformity(content)
+        # Schedule result update on Main Thread
+        self.after(0, lambda: self._apply_audit_results(matches, target_file))
+
+    def _apply_audit_results(self, matches, target_file):
+        """Updates UI with audit matches, verifying we are still looking at the same file."""
+        if self.current_preview_file != target_file:
+            return # User switched files, discard old results
+        
+        self.current_matches = matches
         self.txt_preview.config(state=tk.NORMAL)
         self.txt_preview.tag_remove("audit_match", "1.0", tk.END)
         
-        for m in self.current_matches:
-            # Convert integer indices to Tkinter "1.0 + chars" format
+        for m in matches:
             tk_start = f"1.0 + {m['start']} chars"
             tk_end = f"1.0 + {m['end']} chars"
             self.txt_preview.tag_add("audit_match", tk_start, tk_end)
@@ -587,24 +626,19 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.config(state=tk.DISABLED)
 
     def _on_text_motion(self, event):
-        """Checks if mouse is over an audit match and shows tooltip."""
         try:
             index = self.txt_preview.index(f"@{event.x},{event.y}")
             tags = self.txt_preview.tag_names(index)
             
             if "audit_match" in tags:
-                # Calculate char index to find which specific match we are over
-                # count returns tuple (chars, pixel_height, ...)
                 count_res = self.txt_preview.count("1.0", index, "chars")
                 current_char_idx = count_res[0] if count_res else 0
                 
                 matches_here = []
                 for m in self.current_matches:
-                    # Check overlap
                     if m['start'] <= current_char_idx < m['end']:
                         matches_here.append(m['title'])
                 
-                # Deduplicate titles
                 matches_here = list(set(matches_here))
 
                 if matches_here:

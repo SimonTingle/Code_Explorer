@@ -11,8 +11,6 @@ import time
 import threading
 import json 
 
-# 
-
 try:
     import psutil
 except ImportError:
@@ -46,6 +44,115 @@ class ToolTip:
         self.tip_window = None
         if tw:
             tw.destroy()
+
+# REASON FOR ADDITION: New class to handle VSCode-style syntax highlighting
+class SyntaxHighlighter:
+    """
+    Analyzes text content and applies color tags based on language patterns.
+    Mimics VSCode Dark theme.
+    """
+    # VSCode Dark Theme Colors
+    COLORS = {
+        "normal": "#d4d4d4",
+        "background": "#1e1e1e",
+        "keyword": "#569cd6",   # def, class, if, return
+        "string": "#ce9178",    # "string"
+        "comment": "#6a9955",   # # comment
+        "number": "#b5cea8",    # 123
+        "class": "#4ec9b0",     # ClassName
+        "function": "#dcdcaa",  # function_name
+        "decorator": "#dcdcaa"  # @decorator
+    }
+
+    def __init__(self, text_widget):
+        self.text_widget = text_widget
+        self._configure_tags()
+
+    def _configure_tags(self):
+        """Define the color tags in the tkinter Text widget."""
+        for name, color in self.COLORS.items():
+            if name != "background":
+                self.text_widget.tag_configure(name, foreground=color)
+        
+        # Configure the base look
+        self.text_widget.config(
+            background=self.COLORS["background"],
+            foreground=self.COLORS["normal"],
+            insertbackground="white", # Cursor color
+            selectbackground="#264f78", # Selection color
+            font=("Menlo", 10) # Monospace font is crucial for code
+        )
+
+    def highlight(self, content, file_extension):
+        """Applies highlighting based on file extension."""
+        self.text_widget.config(state=tk.NORMAL)
+        # Clear existing tags (optional, but good for safety)
+        for tag in self.COLORS.keys():
+            self.text_widget.tag_remove(tag, "1.0", tk.END)
+
+        if file_extension in {'.py', '.pyw'}:
+            self._highlight_python(content)
+        elif file_extension in {'.sh', '.bash', '.zsh', 'Dockerfile'}:
+            self._highlight_shell(content)
+        elif file_extension in {'.json', '.js'}:
+            self._highlight_json_js(content)
+        else:
+            # Fallback for generic files: just highlight strings and numbers
+            self._highlight_generic(content)
+            
+        self.text_widget.config(state=tk.DISABLED)
+
+    def _apply_pattern(self, pattern, tag_name, content_str):
+        """Helper to find regex matches and apply tags."""
+        for match in re.finditer(pattern, content_str, re.MULTILINE):
+            start = f"1.0 + {match.start()} chars"
+            end = f"1.0 + {match.end()} chars"
+            self.text_widget.tag_add(tag_name, start, end)
+
+    def _highlight_python(self, content):
+        # 1. Keywords
+        kw_pattern = r"\b(def|class|if|else|elif|return|import|from|try|except|finally|for|while|in|is|not|and|or|as|with|pass|lambda|global|raise|continue|break)\b"
+        self._apply_pattern(kw_pattern, "keyword", content)
+
+        # 2. Class Names (following 'class')
+        self._apply_pattern(r"(?<=class\s)\w+", "class", content)
+        
+        # 3. Function Names (following 'def')
+        self._apply_pattern(r"(?<=def\s)\w+", "function", content)
+
+        # 4. Decorators
+        self._apply_pattern(r"@\w+", "decorator", content)
+
+        # 5. Numbers
+        self._apply_pattern(r"\b\d+\b", "number", content)
+
+        # 6. Strings (Double and Single quotes) - Simple approximation
+        self._apply_pattern(r"(\".*?\"|'.*?')", "string", content)
+
+        # 7. Comments (must be last to overwrite others if needed, though simple regex has limits)
+        self._apply_pattern(r"#.*$", "comment", content)
+
+    def _highlight_shell(self, content):
+        kw_pattern = r"\b(if|fi|then|else|elif|for|do|done|while|case|esac|function|return|exit|echo|source|local|export)\b"
+        self._apply_pattern(kw_pattern, "keyword", content)
+        self._apply_pattern(r"(\".*?\"|'.*?')", "string", content)
+        self._apply_pattern(r"#.*$", "comment", content)
+        self._apply_pattern(r"\b\d+\b", "number", content)
+        # Dockerfile specific
+        docker_kw = r"^(FROM|RUN|CMD|LABEL|MAINTAINER|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG|ONBUILD|STOPSIGNAL|HEALTHCHECK|SHELL)\b"
+        self._apply_pattern(docker_kw, "keyword", content)
+
+    def _highlight_json_js(self, content):
+        kw_pattern = r"\b(true|false|null|var|let|const|function|return|if|else)\b"
+        self._apply_pattern(kw_pattern, "keyword", content)
+        self._apply_pattern(r"(\".*?\"|'.*?')", "string", content)
+        self._apply_pattern(r"\b\d+\b", "number", content)
+        self._apply_pattern(r"//.*$", "comment", content)
+
+    def _highlight_generic(self, content):
+        self._apply_pattern(r"(\".*?\"|'.*?')", "string", content)
+        self._apply_pattern(r"\b\d+\b", "number", content)
+
 
 class FileSystemHandler:
     CHUNK_SIZE = 2048
@@ -125,37 +232,23 @@ class FileSystemHandler:
 
         header = f"File: {os.path.basename(path)}\nType: {mime_type or 'Unknown'}\nSize: {self._format_size(stats.st_size)}"
         
-        # REASON FOR COMMENTING: Old list was missing Terraform, Go, Java, Rust, and config files.
-        # text_extensions = {
-        #     '.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml', 
-        #     '.sh', '.bash', '.zsh', '.env', '.gitignore', '.gitconfig', '.toml', '.lock', '.cfg'
-        # }
-        
-        # REASON FOR ADDITION: Comprehensive list of file extensions to support all requested code types.
         text_extensions = {
-            # Scripts & Web
             '.py', '.pyi', '.js', '.ts', '.html', '.css', '.scss', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
-            # Compiled / Backend
             '.go', '.rs', '.java', '.cs', '.kt', '.c', '.cpp', '.h', '.hpp', '.clj', '.gradle',
-            # Config & Data
             '.json', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.properties', '.env', 
-            '.hcl', '.tf', '.tfvars', '.tfstate', # Terraform
-            # Documentation & Text
+            '.hcl', '.tf', '.tfvars', '.tfstate',
             '.txt', '.md', '.rst', '.adoc', '.csv', '.log', '.patch', '.diff',
-            # Project / Build
             '.gitignore', '.gitconfig', '.dockerignore', '.editorconfig', '.lock', '.mod', '.sum', '.work', 
             '.csproj', '.sln', '.pylintrc', '.npmrc', '.typed', '.pth',
-            # Keys (Public only usually, but user requested pem)
             '.pem', '.pub', '.key', '.crt'
         }
 
-        # REASON FOR ADDITION: Explicit check for filenames without extensions or non-standard names
         known_text_filenames = {
             'Dockerfile', 'Makefile', 'Jenkinsfile', 'Vagrantfile', 'Rakefile', 'Gemfile', 'Procfile',
             'LICENSE', 'README', 'NOTICE', 'AUTHORS', 'OWNERS', 'CONTRIBUTORS', 'PATENTS',
             'APACHE', 'BSD', 'COPYING', 'INSTALL',
-            'METADATA', 'RECORD', 'WHEEL', 'INSTALLER', 'REQUESTED', # Python dist-info
-            'HEAD', 'config', 'description', 'exclude', 'packed-refs', # Git internals
+            'METADATA', 'RECORD', 'WHEEL', 'INSTALLER', 'REQUESTED',
+            'HEAD', 'config', 'description', 'exclude', 'packed-refs',
             'TAG', 'python-version'
         }
         
@@ -163,9 +256,6 @@ class FileSystemHandler:
         _, ext = os.path.splitext(path)
         is_dotfile = filename.startswith('.')
         is_known_filename = filename in known_text_filenames
-        
-        # REASON FOR ADDITION: Heuristic for extension-less files (like 'a1', '0_x5', 'black')
-        # If no extension, and file is small (< 1MB), assume it might be text.
         is_extensionless_text = (not ext and stats.st_size < 1_000_000)
 
         should_try_read = (
@@ -176,7 +266,6 @@ class FileSystemHandler:
             is_extensionless_text
         )
 
-        # REASON FOR ADDITION: Explicit exclusion of known binaries to prevent freezing on 'git/index' or '.DS_Store'
         binary_extensions = {'.gz', '.zip', '.tar', '.tgz', '.pyc', '.so', '.dylib', '.dll', '.class', '.exe', '.pack', '.idx', '.whl'}
         if ext.lower() in binary_extensions or filename == '.DS_Store' or filename == 'index':
             should_try_read = False
@@ -254,6 +343,10 @@ class ExplorerUI(ttk.Frame):
         self._setup_context_menu() 
         self._bind_events()
         self._load_favorites() 
+        
+        # REASON FOR ADDITION: Initialize Highlighter
+        self.highlighter = SyntaxHighlighter(self.txt_preview)
+        
         self.load_path(self.current_path)
 
     def _setup_layout(self):
@@ -322,8 +415,19 @@ class ExplorerUI(ttk.Frame):
         self.text_container = ttk.Frame(self.preview_frame)
         self.text_container.pack(fill=tk.BOTH, expand=True)
 
-        self.txt_preview = tk.Text(self.text_container, wrap="none", height=10, width=35, font=("Menlo", 10), state=tk.DISABLED)
-        self.txt_preview.pack(fill=tk.BOTH, expand=True)
+        # REASON FOR COMMENTING: Old Text widget definition without wrapping/scroll support
+        # self.txt_preview = tk.Text(self.text_container, wrap="none", height=10, width=35, font=("Menlo", 10), state=tk.DISABLED)
+        # self.txt_preview.pack(fill=tk.BOTH, expand=True)
+
+        # REASON FOR UPDATE: Configure Text widget for code view (no wrap, dark bg via class, horiz scroll)
+        self.txt_preview = tk.Text(self.text_container, wrap="none", height=10, width=35, state=tk.DISABLED)
+        
+        # Add Horizontal Scrollbar
+        self.h_scroll = ttk.Scrollbar(self.text_container, orient=tk.HORIZONTAL, command=self.txt_preview.xview)
+        self.txt_preview.configure(xscrollcommand=self.h_scroll.set)
+        
+        self.h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        self.txt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.load_more_btn = ttk.Button(self.preview_frame, text="Load More...", command=self.load_next_chunk)
 
@@ -387,8 +491,6 @@ class ExplorerUI(ttk.Frame):
         self._update_task_status(-1)
 
     def perform_search(self):
-        # REASON FOR COMMENTING: Previous one-line semicolon syntax was invalid
-        # q = self.search_var.get().strip(); if not q: return
         q = self.search_var.get().strip()
         if not q:
             return
@@ -409,19 +511,12 @@ class ExplorerUI(ttk.Frame):
         self.cancel_event.set(); self.is_searching = False; self.search_var.set("")
         self.clear_btn.config(state=tk.DISABLED); self.load_path(self.current_path)
 
-    # REASON FOR COMMENTING: Previous setup_context_menu did not include Refresh or Open Terminal
-    # def _setup_context_menu(self):
-    #     self.context_menu = tk.Menu(self, tearoff=0)
-    #     self.context_menu.add_command(label="Reveal in Finder", command=lambda: subprocess.run(["open", "-R", self.tree.focus()]))
-    #     self.context_menu.add_command(label="Copy Path", command=lambda: (self.clipboard_clear(), self.clipboard_append(self.tree.focus())))
-
     def _setup_context_menu(self):
         """Initializes the right-click context menu with macOS-specific terminal and refresh support."""
         self.context_menu = tk.Menu(self, tearoff=0)
         self.context_menu.add_command(label="Reveal in Finder", command=self.reveal_in_finder)
         self.context_menu.add_command(label="Copy Path", command=self.copy_path_to_clipboard)
         self.context_menu.add_separator()
-        # REASON FOR ADDITION: New menu items for utility and terminal access
         self.context_menu.add_command(label="Open Terminal", command=self.open_terminal_at_selection)
         self.context_menu.add_command(label="Refresh", command=lambda: self.load_path(self.current_path))
 
@@ -476,6 +571,14 @@ class ExplorerUI(ttk.Frame):
         h, c, has_more = self.logic.get_preview_content(path, self.preview_offset)
         self.lbl_meta.config(text=h)
         self.txt_preview.insert(tk.END, c)
+        
+        # REASON FOR ADDITION: Trigger Syntax Highlighting
+        _, ext = os.path.splitext(path)
+        # Check for known filenames without extension (Dockerfile)
+        if os.path.basename(path) in {'Dockerfile', 'Makefile', 'Jenkinsfile'}:
+            ext = 'Dockerfile'
+        self.highlighter.highlight(c, ext)
+
         self.txt_preview.config(state=tk.DISABLED)
         
         if c and not c.startswith("["):
@@ -489,7 +592,22 @@ class ExplorerUI(ttk.Frame):
         """Appends next chunk to preview window."""
         if not self.current_preview_file: return
         h, c, has_more = self.logic.get_preview_content(self.current_preview_file, self.preview_offset)
-        self.txt_preview.config(state=tk.NORMAL); self.txt_preview.insert(tk.END, "\n" + "-"*10 + " [Next Chunk] " + "-"*10 + "\n"); self.txt_preview.insert(tk.END, c); self.txt_preview.config(state=tk.DISABLED); self.txt_preview.see(tk.END)
+        self.txt_preview.config(state=tk.NORMAL)
+        self.txt_preview.insert(tk.END, "\n" + "-"*10 + " [Next Chunk] " + "-"*10 + "\n")
+        self.txt_preview.insert(tk.END, c)
+        
+        # REASON FOR ADDITION: Highlight the appended chunk
+        _, ext = os.path.splitext(self.current_preview_file)
+        # Re-highlight full content (simpler for regex consistency) or just append
+        # For simplicity in this script, we re-highlight, though efficient lexers stream it.
+        # Since this is a simple regex highlighter, we can just highlight the new part or re-run.
+        # Re-running on full text is safer for context.
+        full_content = self.txt_preview.get("1.0", tk.END)
+        self.highlighter.highlight(full_content, ext)
+        
+        self.txt_preview.config(state=tk.DISABLED)
+        self.txt_preview.see(tk.END)
+        
         if not has_more: self.load_more_btn.pack_forget()
         else: self.preview_offset += self.logic.CHUNK_SIZE
 

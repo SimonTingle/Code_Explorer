@@ -48,7 +48,6 @@ class ToolTip:
             tw.destroy()
 
 class FileSystemHandler:
-    # REASON FOR ADDITION: Track chunk size for "Load More" functionality
     CHUNK_SIZE = 2048
 
     def search_files(self, start_path, query, cancel_event=None):
@@ -60,10 +59,12 @@ class FileSystemHandler:
                     return None
                 for d in dirs:
                     if query in d.lower():
-                        items.append(self._create_item_dict_from_path(os.path.join(root, d)))
+                        item = self._create_item_dict_from_path(os.path.join(root, d))
+                        if item: items.append(item)
                 for f in files:
                     if query in f.lower():
-                        items.append(self._create_item_dict_from_path(os.path.join(root, f)))
+                        item = self._create_item_dict_from_path(os.path.join(root, f))
+                        if item: items.append(item)
                 if len(items) > 2000: break 
         except Exception: pass
         return items
@@ -73,20 +74,26 @@ class FileSystemHandler:
         try:
             with os.scandir(path) as it:
                 for entry in it:
-                    items.append(self._create_item_dict(entry))
+                    item = self._create_item_dict(entry)
+                    if item:
+                        items.append(item)
         except PermissionError: return None
         items.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
         return items
 
     def _create_item_dict(self, entry):
-        stats = entry.stat()
-        return self._format_item_data(entry.name, entry.path, entry.is_dir(), stats)
+        try:
+            stats = entry.stat()
+            return self._format_item_data(entry.name, entry.path, entry.is_dir(), stats)
+        except (FileNotFoundError, OSError):
+            return None
 
     def _create_item_dict_from_path(self, path):
         try:
             stats = os.stat(path)
             return self._format_item_data(os.path.basename(path), path, os.path.isdir(path), stats)
-        except (FileNotFoundError, PermissionError): return None
+        except (FileNotFoundError, PermissionError, OSError): 
+            return None
 
     def _format_item_data(self, name, path, is_dir, stats):
         return {
@@ -103,12 +110,7 @@ class FileSystemHandler:
             size /= 1024
         return f"{size:.1f} PB"
 
-    # REASON FOR COMMENTING: Previous get_preview_content didn't support offset support or .sh script visibility
-    # def get_preview_content(self, path, offset=0):
-    #     ... original code ...
-
     def get_preview_content(self, path, offset=0):
-        """Determines content for the preview pane with offset support and expanded extension support."""
         if not path or not os.path.exists(path): return "Info", "Item not found.", False
         if os.path.isdir(path):
             try: count = len(os.listdir(path))
@@ -116,19 +118,70 @@ class FileSystemHandler:
             return "Folder Info", f"Path: {path}\nContains: {count} items", False
         
         mime_type, _ = mimetypes.guess_type(path)
-        stats = os.stat(path)
+        try:
+            stats = os.stat(path)
+        except OSError:
+            return "Error", "File inaccessible.", False
+
         header = f"File: {os.path.basename(path)}\nType: {mime_type or 'Unknown'}\nSize: {self._format_size(stats.st_size)}"
         
-        # REASON FOR UPDATE: Expanded text_extensions to include shell scripts and dev config files
+        # REASON FOR COMMENTING: Old list was missing Terraform, Go, Java, Rust, and config files.
+        # text_extensions = {
+        #     '.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml', 
+        #     '.sh', '.bash', '.zsh', '.env', '.gitignore', '.gitconfig', '.toml', '.lock', '.cfg'
+        # }
+        
+        # REASON FOR ADDITION: Comprehensive list of file extensions to support all requested code types.
         text_extensions = {
-            '.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml', 
-            '.sh', '.bash', '.zsh', '.env', '.gitignore', '.gitconfig', '.toml', '.lock', '.cfg'
+            # Scripts & Web
+            '.py', '.pyi', '.js', '.ts', '.html', '.css', '.scss', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
+            # Compiled / Backend
+            '.go', '.rs', '.java', '.cs', '.kt', '.c', '.cpp', '.h', '.hpp', '.clj', '.gradle',
+            # Config & Data
+            '.json', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.properties', '.env', 
+            '.hcl', '.tf', '.tfvars', '.tfstate', # Terraform
+            # Documentation & Text
+            '.txt', '.md', '.rst', '.adoc', '.csv', '.log', '.patch', '.diff',
+            # Project / Build
+            '.gitignore', '.gitconfig', '.dockerignore', '.editorconfig', '.lock', '.mod', '.sum', '.work', 
+            '.csproj', '.sln', '.pylintrc', '.npmrc', '.typed', '.pth',
+            # Keys (Public only usually, but user requested pem)
+            '.pem', '.pub', '.key', '.crt'
+        }
+
+        # REASON FOR ADDITION: Explicit check for filenames without extensions or non-standard names
+        known_text_filenames = {
+            'Dockerfile', 'Makefile', 'Jenkinsfile', 'Vagrantfile', 'Rakefile', 'Gemfile', 'Procfile',
+            'LICENSE', 'README', 'NOTICE', 'AUTHORS', 'OWNERS', 'CONTRIBUTORS', 'PATENTS',
+            'APACHE', 'BSD', 'COPYING', 'INSTALL',
+            'METADATA', 'RECORD', 'WHEEL', 'INSTALLER', 'REQUESTED', # Python dist-info
+            'HEAD', 'config', 'description', 'exclude', 'packed-refs', # Git internals
+            'TAG', 'python-version'
         }
         
+        filename = os.path.basename(path)
         _, ext = os.path.splitext(path)
-        is_dotfile = os.path.basename(path).startswith('.')
+        is_dotfile = filename.startswith('.')
+        is_known_filename = filename in known_text_filenames
         
-        if (mime_type and mime_type.startswith('text')) or (ext.lower() in text_extensions) or is_dotfile:
+        # REASON FOR ADDITION: Heuristic for extension-less files (like 'a1', '0_x5', 'black')
+        # If no extension, and file is small (< 1MB), assume it might be text.
+        is_extensionless_text = (not ext and stats.st_size < 1_000_000)
+
+        should_try_read = (
+            (mime_type and mime_type.startswith('text')) or 
+            (ext.lower() in text_extensions) or 
+            is_dotfile or 
+            is_known_filename or 
+            is_extensionless_text
+        )
+
+        # REASON FOR ADDITION: Explicit exclusion of known binaries to prevent freezing on 'git/index' or '.DS_Store'
+        binary_extensions = {'.gz', '.zip', '.tar', '.tgz', '.pyc', '.so', '.dylib', '.dll', '.class', '.exe', '.pack', '.idx', '.whl'}
+        if ext.lower() in binary_extensions or filename == '.DS_Store' or filename == 'index':
+            should_try_read = False
+
+        if should_try_read:
             try:
                 with open(path, 'r', encoding='utf-8', errors='replace') as f:
                     f.seek(offset)
@@ -136,6 +189,7 @@ class FileSystemHandler:
                     has_more = (offset + self.CHUNK_SIZE) < stats.st_size
                     return header, content, has_more
             except Exception as e: return header, f"Error reading text: {str(e)}", False
+            
         return header, "[Binary File]\nNo preview available.", False
 
 class SystemMonitor(ttk.Frame):
@@ -240,7 +294,6 @@ class ExplorerUI(ttk.Frame):
 
         self.paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        
         self.tree_frame = ttk.Frame(self.paned_window); self.paned_window.add(self.tree_frame, weight=1)
         self.cols = ("size", "modified")
         self.tree = ttk.Treeview(self.tree_frame, columns=self.cols, selectmode="browse")
@@ -380,7 +433,6 @@ class ExplorerUI(ttk.Frame):
         path = self.tree.focus()
         if path: self.clipboard_clear(); self.clipboard_append(path)
 
-    # REASON FOR ADDITION: macOS-specific Terminal launch at directory level
     def open_terminal_at_selection(self):
         """Opens Terminal.app at the path of the selected item."""
         path = self.tree.focus()

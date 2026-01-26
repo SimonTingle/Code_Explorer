@@ -48,7 +48,6 @@ class ToolTip:
             tw.destroy()
 
 class FileSystemHandler:
-    # REASON FOR ADDITION: Track chunk size for "Load More" functionality
     CHUNK_SIZE = 2048
 
     def search_files(self, start_path, query, cancel_event=None):
@@ -103,9 +102,6 @@ class FileSystemHandler:
             size /= 1024
         return f"{size:.1f} PB"
 
-    # REASON FOR COMMENTING: Original text_extensions was too limited; didn't support .sh or dotfiles.
-    # text_extensions = {'.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml'}
-
     def get_preview_content(self, path, offset=0):
         """Determines content for the preview pane with offset support and expanded extension support."""
         if not path or not os.path.exists(path): return "Info", "Item not found.", False
@@ -118,7 +114,6 @@ class FileSystemHandler:
         stats = os.stat(path)
         header = f"File: {os.path.basename(path)}\nType: {mime_type or 'Unknown'}\nSize: {self._format_size(stats.st_size)}"
         
-        # REASON FOR ADDITION: Added .sh, .bash, .zsh, and dotfiles to the allowed preview list.
         text_extensions = {
             '.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml', 
             '.sh', '.bash', '.zsh', '.env', '.gitignore', '.gitconfig', '.toml', '.lock', '.cfg'
@@ -147,7 +142,6 @@ class SystemMonitor(ttk.Frame):
         self.last_net_io = psutil.net_io_counters(); self.last_time = time.time()
         f_cfg = ("Menlo", 9)
         
-        # REASON FOR ADDITION: Using a label reference to prevent jumping UI when numbers change.
         self.lbl_task = ttk.Label(self, text="T: 0", font=f_cfg, width=6, foreground="#007AFF")
         self.lbl_task.pack(side=tk.LEFT, padx=2)
         
@@ -219,7 +213,6 @@ class ExplorerUI(ttk.Frame):
         self.clear_btn = ttk.Button(nav_frame, text="X", width=2, command=self.clear_search, state=tk.DISABLED)
         self.clear_btn.pack(side=tk.LEFT, padx=(2, 0))
         
-        # REASON FOR UPDATE: Monitor frame separated for side-by-side layout in top container.
         monitor_frame = ttk.Frame(top_container); monitor_frame.pack(side=tk.RIGHT, padx=(5, 0))
         self.monitor = SystemMonitor(monitor_frame); self.monitor.pack(side=tk.LEFT)
 
@@ -258,8 +251,16 @@ class ExplorerUI(ttk.Frame):
         
         self.preview_frame = ttk.Frame(self.paned_window, relief="sunken", padding=5)
         self.paned_window.add(self.preview_frame, weight=0)
-        self.lbl_meta = ttk.Label(self.preview_frame, text="Select a file", font=("Helvetica", 10, "bold"))
-        self.lbl_meta.pack(anchor="nw", fill=tk.X, pady=(0, 5))
+        
+        # --- REASON FOR UPDATE: New header frame for preview metadata and Copy button ---
+        preview_header = ttk.Frame(self.preview_frame)
+        preview_header.pack(fill=tk.X, pady=(0, 5))
+        
+        self.lbl_meta = ttk.Label(preview_header, text="Select a file", font=("Helvetica", 10, "bold"))
+        self.lbl_meta.pack(side=tk.LEFT, anchor="nw")
+        
+        self.copy_btn = ttk.Button(preview_header, text="Copy", width=6, command=self.copy_preview_to_clipboard)
+        # REASON: Hide copy button until valid text is loaded
         
         self.text_container = ttk.Frame(self.preview_frame)
         self.text_container.pack(fill=tk.BOTH, expand=True)
@@ -370,11 +371,16 @@ class ExplorerUI(ttk.Frame):
             if self.is_searching: self.clear_search()
             self.load_path(sid)
 
+    # REASON FOR COMMENTING: Previous update_preview did not handle Copy button visibility.
+    # def update_preview(self, path):
+    #     ... original code ...
+
     def update_preview(self, path):
         """Initial load of a file preview with truncation check and button visibility."""
         self.preview_offset = 0
         self.current_preview_file = path
-        self.load_more_btn.pack_forget() 
+        self.load_more_btn.pack_forget()
+        self.copy_btn.pack_forget()
         
         self.txt_preview.config(state=tk.NORMAL)
         self.txt_preview.delete(1.0, tk.END)
@@ -389,6 +395,10 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.insert(tk.END, c)
         self.txt_preview.config(state=tk.DISABLED)
         
+        # REASON: Show Copy button only if text was actually loaded
+        if c and not c.startswith("["):
+            self.copy_btn.pack(side=tk.RIGHT, anchor="ne", padx=5)
+        
         if has_more:
             self.load_more_btn.pack(side=tk.BOTTOM, fill=tk.X, pady=2)
             self.preview_offset += self.logic.CHUNK_SIZE
@@ -400,6 +410,17 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.config(state=tk.NORMAL); self.txt_preview.insert(tk.END, "\n" + "-"*10 + " [Next Chunk] " + "-"*10 + "\n"); self.txt_preview.insert(tk.END, c); self.txt_preview.config(state=tk.DISABLED); self.txt_preview.see(tk.END)
         if not has_more: self.load_more_btn.pack_forget()
         else: self.preview_offset += self.logic.CHUNK_SIZE
+
+    # REASON FOR ADDITION: Function to copy current preview text to macOS clipboard
+    def copy_preview_to_clipboard(self):
+        """Copies all text currently in the preview window."""
+        content = self.txt_preview.get(1.0, tk.END)
+        if content.strip():
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            # Optional: Visual feedback
+            self.copy_btn.config(text="Copied!")
+            self.after(1500, lambda: self.copy_btn.config(text="Copy"))
 
     def _sort_column(self, col):
         children = self.tree.get_children(''); self.sort_reverse = not self.sort_reverse

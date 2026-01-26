@@ -48,6 +48,7 @@ class ToolTip:
             tw.destroy()
 
 class FileSystemHandler:
+    # REASON FOR ADDITION: Track chunk size for "Load More" functionality
     CHUNK_SIZE = 2048
 
     def search_files(self, start_path, query, cancel_event=None):
@@ -102,6 +103,10 @@ class FileSystemHandler:
             size /= 1024
         return f"{size:.1f} PB"
 
+    # REASON FOR COMMENTING: Previous get_preview_content didn't support offset support or .sh script visibility
+    # def get_preview_content(self, path, offset=0):
+    #     ... original code ...
+
     def get_preview_content(self, path, offset=0):
         """Determines content for the preview pane with offset support and expanded extension support."""
         if not path or not os.path.exists(path): return "Info", "Item not found.", False
@@ -114,6 +119,7 @@ class FileSystemHandler:
         stats = os.stat(path)
         header = f"File: {os.path.basename(path)}\nType: {mime_type or 'Unknown'}\nSize: {self._format_size(stats.st_size)}"
         
+        # REASON FOR UPDATE: Expanded text_extensions to include shell scripts and dev config files
         text_extensions = {
             '.py', '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.csv', '.log', '.yml', 
             '.sh', '.bash', '.zsh', '.env', '.gitignore', '.gitconfig', '.toml', '.lock', '.cfg'
@@ -252,7 +258,6 @@ class ExplorerUI(ttk.Frame):
         self.preview_frame = ttk.Frame(self.paned_window, relief="sunken", padding=5)
         self.paned_window.add(self.preview_frame, weight=0)
         
-        # --- REASON FOR UPDATE: New header frame for preview metadata and Copy button ---
         preview_header = ttk.Frame(self.preview_frame)
         preview_header.pack(fill=tk.X, pady=(0, 5))
         
@@ -260,7 +265,6 @@ class ExplorerUI(ttk.Frame):
         self.lbl_meta.pack(side=tk.LEFT, anchor="nw")
         
         self.copy_btn = ttk.Button(preview_header, text="Copy", width=6, command=self.copy_preview_to_clipboard)
-        # REASON: Hide copy button until valid text is loaded
         
         self.text_container = ttk.Frame(self.preview_frame)
         self.text_container.pack(fill=tk.BOTH, expand=True)
@@ -330,8 +334,11 @@ class ExplorerUI(ttk.Frame):
         self._update_task_status(-1)
 
     def perform_search(self):
+        # REASON FOR COMMENTING: Previous one-line semicolon syntax was invalid
+        # q = self.search_var.get().strip(); if not q: return
         q = self.search_var.get().strip()
-        if not q: return
+        if not q:
+            return
         self.is_searching = True; self.clear_btn.config(state=tk.NORMAL)
         self.cancel_event.set(); self.cancel_event = threading.Event()
         self._update_task_status(1)
@@ -349,17 +356,45 @@ class ExplorerUI(ttk.Frame):
         self.cancel_event.set(); self.is_searching = False; self.search_var.set("")
         self.clear_btn.config(state=tk.DISABLED); self.load_path(self.current_path)
 
+    # REASON FOR COMMENTING: Previous setup_context_menu did not include Refresh or Open Terminal
+    # def _setup_context_menu(self):
+    #     self.context_menu = tk.Menu(self, tearoff=0)
+    #     self.context_menu.add_command(label="Reveal in Finder", command=lambda: subprocess.run(["open", "-R", self.tree.focus()]))
+    #     self.context_menu.add_command(label="Copy Path", command=lambda: (self.clipboard_clear(), self.clipboard_append(self.tree.focus())))
+
     def _setup_context_menu(self):
+        """Initializes the right-click context menu with macOS-specific terminal and refresh support."""
         self.context_menu = tk.Menu(self, tearoff=0)
-        self.context_menu.add_command(label="Reveal in Finder", command=lambda: subprocess.run(["open", "-R", self.tree.focus()]))
-        self.context_menu.add_command(label="Copy Path", command=lambda: (self.clipboard_clear(), self.clipboard_append(self.tree.focus())))
+        self.context_menu.add_command(label="Reveal in Finder", command=self.reveal_in_finder)
+        self.context_menu.add_command(label="Copy Path", command=self.copy_path_to_clipboard)
+        self.context_menu.add_separator()
+        # REASON FOR ADDITION: New menu items for utility and terminal access
+        self.context_menu.add_command(label="Open Terminal", command=self.open_terminal_at_selection)
+        self.context_menu.add_command(label="Refresh", command=lambda: self.load_path(self.current_path))
+
+    def reveal_in_finder(self):
+        path = self.tree.focus()
+        if path: subprocess.run(["open", "-R", path])
+
+    def copy_path_to_clipboard(self):
+        path = self.tree.focus()
+        if path: self.clipboard_clear(); self.clipboard_append(path)
+
+    # REASON FOR ADDITION: macOS-specific Terminal launch at directory level
+    def open_terminal_at_selection(self):
+        """Opens Terminal.app at the path of the selected item."""
+        path = self.tree.focus()
+        if path:
+            target = path if os.path.isdir(path) else os.path.dirname(path)
+            subprocess.run(["open", "-a", "Terminal", target])
 
     def _bind_events(self):
         self.tree.bind("<Double-1>", lambda e: self._on_dbclick())
         self.tree.bind("<Return>", lambda e: self._on_dbclick())
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.update_preview(self.tree.focus()))
         self.search_entry.bind("<Return>", lambda e: self.perform_search())
-        self.tree.bind("<Button-2>", self._show_ctx); self.tree.bind("<Button-3>", self._show_ctx)
+        self.tree.bind("<Button-2>", self._show_ctx)
+        self.tree.bind("<Button-3>", self._show_ctx)
 
     def _show_ctx(self, e):
         row = self.tree.identify_row(e.y)
@@ -370,10 +405,6 @@ class ExplorerUI(ttk.Frame):
         if sid and os.path.isdir(sid):
             if self.is_searching: self.clear_search()
             self.load_path(sid)
-
-    # REASON FOR COMMENTING: Previous update_preview did not handle Copy button visibility.
-    # def update_preview(self, path):
-    #     ... original code ...
 
     def update_preview(self, path):
         """Initial load of a file preview with truncation check and button visibility."""
@@ -395,7 +426,6 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.insert(tk.END, c)
         self.txt_preview.config(state=tk.DISABLED)
         
-        # REASON: Show Copy button only if text was actually loaded
         if c and not c.startswith("["):
             self.copy_btn.pack(side=tk.RIGHT, anchor="ne", padx=5)
         
@@ -411,14 +441,12 @@ class ExplorerUI(ttk.Frame):
         if not has_more: self.load_more_btn.pack_forget()
         else: self.preview_offset += self.logic.CHUNK_SIZE
 
-    # REASON FOR ADDITION: Function to copy current preview text to macOS clipboard
     def copy_preview_to_clipboard(self):
-        """Copies all text currently in the preview window."""
+        """Copies preview text content to clipboard."""
         content = self.txt_preview.get(1.0, tk.END)
-        if content.strip():
+        if content.strip(): 
             self.clipboard_clear()
             self.clipboard_append(content)
-            # Optional: Visual feedback
             self.copy_btn.config(text="Copied!")
             self.after(1500, lambda: self.copy_btn.config(text="Copy"))
 

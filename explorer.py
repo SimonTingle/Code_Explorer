@@ -11,6 +11,9 @@ import time
 import threading
 import json 
 import difflib 
+import random # REASON: Needed for random colors in Visualization
+import webbrowser # REASON: Needed to open the 3D HTML file
+from concurrent.futures import ThreadPoolExecutor # REASON: Needed for multi-threaded file parsing in 3D generation
 
 try:
     import psutil
@@ -59,6 +62,484 @@ class ToolTip:
             self.tip_window = None
             self.label = None
 
+# REASON FOR ADDITION: Class to handle generating charts for directory visualization (Pie Chart)
+# REASON FOR UPDATE: Fixed invisible text bug by forcing fill="black" on white canvas
+class DirectoryVisualizer(tk.Toplevel):
+    def __init__(self, parent, path):
+        super().__init__(parent)
+        self.title(f"Visualizing: {os.path.basename(path)}")
+        self.geometry("600x450")
+        self.path = path
+        self.canvas = tk.Canvas(self, bg="white")
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # REASON FOR UPDATE: Ensure loading text is visible (black)
+        self.lbl_loading = tk.Label(self, text="Scanning...", font=("Helvetica", 14), bg="white", fg="black")
+        self.lbl_loading.place(relx=0.5, rely=0.5, anchor="center")
+        
+        threading.Thread(target=self._scan_and_draw, daemon=True).start()
+
+    def _scan_and_draw(self):
+        stats = {}
+        total_size = 0
+        try:
+            with os.scandir(self.path) as it:
+                for entry in it:
+                    if entry.is_file():
+                        try:
+                            size = entry.stat().st_size
+                            _, ext = os.path.splitext(entry.name)
+                            ext = ext.lower() if ext else "No Ext"
+                            stats[ext] = stats.get(ext, 0) + size
+                            total_size += size
+                        except (OSError, PermissionError): pass
+        except Exception: pass
+
+        self.after(0, lambda: self._draw_pie_chart(stats, total_size))
+
+    def _draw_pie_chart(self, stats, total_size):
+        self.lbl_loading.destroy()
+        if total_size == 0:
+            # REASON FOR UPDATE: Added fill="black"
+            self.canvas.create_text(300, 225, text="Folder is empty or inaccessible.", font=("Helvetica", 12), fill="black")
+            return
+
+        sorted_stats = sorted(stats.items(), key=lambda item: item[1], reverse=True)
+        
+        cx, cy = 200, 225
+        radius = 150
+        start_angle = 0
+        lx, ly = 400, 50
+        
+        # REASON FOR UPDATE: Added fill="black" to title
+        self.canvas.create_text(cx, 30, text="File Type Distribution (Size)", font=("Helvetica", 12, "bold"), fill="black")
+
+        for ext, size in sorted_stats:
+            percent = (size / total_size) * 360
+            if percent < 1: continue 
+            
+            color = "#%02x%02x%02x" % (random.randint(100,255), random.randint(100,255), random.randint(100,255))
+            
+            self.canvas.create_arc(cx-radius, cy-radius, cx+radius, cy+radius, 
+                                   start=start_angle, extent=percent, fill=color, outline="white")
+            
+            readable_pct = (size / total_size) * 100
+            legend_text = f"{ext}: {readable_pct:.1f}%"
+            
+            self.canvas.create_rectangle(lx, ly, lx+15, ly+15, fill=color, outline="black")
+            
+            # REASON FOR UPDATE: Added fill="black" to legend text to ensure visibility
+            self.canvas.create_text(lx+25, ly+7, text=legend_text, anchor="w", font=("Menlo", 9), fill="black")
+            
+            start_angle += percent
+            ly += 20
+            if ly > 400: break
+
+# REASON FOR COMMENTING OUT: Replaced by ConfigurableGraphGenerator to support filtering, 
+# code snippets, and multi-threading as requested.
+# class GraphGenerator:
+#     """Generates a JSON structure for 3D Force Graph and injects it into HTML."""
+#     
+#     def generate_3d_view(self, root_path):
+#         nodes = []
+#         links = []
+#         id_counter = 0
+#         path_map = {} # path -> id
+#
+#         # 1. Walk directory to build Nodes (Planets) and Directory Links
+#         for root, dirs, files in os.walk(root_path):
+#             # Create node for current folder
+#             folder_id = path_map.get(root)
+#             if folder_id is None:
+#                 folder_id = id_counter
+#                 path_map[root] = folder_id
+#                 nodes.append({"id": folder_id, "name": os.path.basename(root), "val": 5, "color": "white", "type": "folder"})
+#                 id_counter += 1
+#
+#             # Link folder to parent
+#             parent_dir = os.path.dirname(root)
+#             if parent_dir in path_map:
+#                 links.append({"source": path_map[parent_dir], "target": folder_id, "width": 1, "color": "#555"})
+#
+#             # Process files
+#             for f in files:
+#                 file_path = os.path.join(root, f)
+#                 file_id = id_counter
+#                 path_map[file_path] = file_id
+#                 id_counter += 1
+#                 
+#                 # Determine color/size based on extension
+#                 _, ext = os.path.splitext(f)
+#                 color = self._get_color(ext)
+#                 size = 1 # Default size
+#                 
+#                 # Try getting actual size for "Mass"
+#                 try: size = os.path.getsize(file_path) / 1024 # KB
+#                 except: pass
+#                 # Log scale for size so huge files don't cover everything
+#                 visual_size = max(1, min(10, size**0.2)) 
+#
+#                 nodes.append({"id": file_id, "name": f, "val": visual_size, "color": color, "type": "file", "path": file_path})
+#                 
+#                 # Link file to its folder
+#                 links.append({"source": folder_id, "target": file_id, "width": 1, "color": "#555"})
+#
+#         # 2. Analyze Associations (The "Thick Lines")
+#         # Limit to first 1000 nodes to prevent browser crash on huge repos
+#         if len(nodes) < 1000:
+#             for node in nodes:
+#                 if node["type"] == "file" and node["name"].endswith(".py"):
+#                     try:
+#                         with open(node["path"], "r", errors="ignore") as f:
+#                             content = f.read()
+#                             # Naive check: if 'import X' and X is another filename
+#                             for other_node in nodes:
+#                                 if other_node["type"] == "file" and other_node != node:
+#                                     name_no_ext = os.path.splitext(other_node["name"])[0]
+#                                     if len(name_no_ext) > 2 and f"import {name_no_ext}" in content:
+#                                         links.append({"source": node["id"], "target": other_node["id"], "width": 4, "color": "#00ff00"})
+#                     except: pass
+#
+#         return self._create_html(nodes, links)
+#
+#     def _get_color(self, ext):
+#         ext = ext.lower()
+#         if ext in ['.py', '.pyw']: return "#3776ab" # Python Blue
+#         if ext in ['.js', '.json']: return "#f7df1e" # JS Yellow
+#         if ext in ['.html', '.css']: return "#e34c26" # HTML Orange
+#         if ext in ['.md', '.txt']: return "#ffffff" # White
+#         if ext in ['Dockerfile', 'dockerfile']: return "#0db7ed" # Docker Blue
+#         return "#ff00ff" # Unknown Magenta
+#
+#     def _create_html(self, nodes, links):
+#         data = json.dumps({"nodes": nodes, "links": links})
+#         
+#         # REASON FOR UPDATE: Fixed 'ReferenceError' by using explicit https:// protocol for local file execution
+#         html_template = f"""
+#         <head>
+#           <style> body {{ margin: 0; background: #000011; }} </style>
+#           <script src="https://unpkg.com/3d-force-graph"></script>
+#         </head>
+#         <body>
+#           <div id="3d-graph"></div>
+#           <script>
+#             const gData = {data};
+#
+#             const Graph = ForceGraph3D()
+#               (document.getElementById('3d-graph'))
+#                 .graphData(gData)
+#                 .nodeLabel('name')
+#                 .nodeColor('color')
+#                 .nodeVal('val')
+#                 .linkWidth('width')
+#                 .linkColor('color')
+#                 .nodeResolution(16)
+#                 .backgroundColor('#000011');
+#             
+#             Graph.d3Force('charge').strength(-50);
+#             
+#             Graph.onNodeClick(node => {{
+#                 const distance = 40;
+#                 const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
+#
+#                 Graph.cameraPosition(
+#                   {{ x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }}, 
+#                   node, 
+#                   3000
+#                 );
+#             }});
+#           </script>
+#         </body>
+#         """
+#         return html_template
+
+# REASON FOR ADDITION: New Dashboard Window to configure the 3D visualization (Dropdowns/Checkboxes)
+class VisualizerLauncher(tk.Toplevel):
+    def __init__(self, parent, root_path, generator_callback):
+        super().__init__(parent)
+        self.title("3D Network Configuration")
+        self.geometry("600x600")
+        self.root_path = root_path
+        self.generator_callback = generator_callback
+        
+        # Data containers
+        self.all_exts = set()
+        self.all_folders = set()
+        self.ext_vars = {}
+        self.folder_vars = {}
+        
+        self._setup_ui()
+        self._scan_metadata()
+
+    def _setup_ui(self):
+        # Header
+        ttk.Label(self, text="Configure 3D Visualization", font=("Helvetica", 14, "bold")).pack(pady=10)
+        
+        # Split pane for Folders and Extensions
+        paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Left: File Types
+        left_frame = ttk.Labelframe(paned, text="File Types")
+        paned.add(left_frame, weight=1)
+        self.ext_canvas = self._create_scrollable_frame(left_frame)
+        
+        # Right: Folders
+        right_frame = ttk.Labelframe(paned, text="Folders (Top Level)")
+        paned.add(right_frame, weight=1)
+        self.folder_canvas = self._create_scrollable_frame(right_frame)
+
+        # Bottom: Actions
+        btn_frame = ttk.Frame(self, padding=10)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        
+        ttk.Button(btn_frame, text="Generate 3D Graph", command=self._on_generate).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Select All", command=self._select_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Select None", command=self._select_none).pack(side=tk.LEFT, padx=5)
+
+    def _create_scrollable_frame(self, parent):
+        canvas = tk.Canvas(parent)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        return scrollable_frame
+
+    def _scan_metadata(self):
+        """Quickly scans just the top level folders and all extensions."""
+        try:
+            for root, dirs, files in os.walk(self.root_path):
+                # Folders
+                if root == self.root_path:
+                    for d in dirs: self.all_folders.add(d)
+                
+                # Extensions
+                for f in files:
+                    _, ext = os.path.splitext(f)
+                    if ext: self.all_exts.add(ext.lower())
+        except: pass
+        
+        self._populate_ui()
+
+    def _populate_ui(self):
+        # Populate Extensions
+        for ext in sorted(self.all_exts):
+            var = tk.BooleanVar(value=True)
+            self.ext_vars[ext] = var
+            chk = ttk.Checkbutton(self.ext_canvas.master.winfo_children()[0], text=ext, variable=var)
+            chk.pack(anchor="w", padx=5)
+            
+        # Populate Folders
+        for folder in sorted(self.all_folders):
+            var = tk.BooleanVar(value=True)
+            self.folder_vars[folder] = var
+            chk = ttk.Checkbutton(self.folder_canvas.master.winfo_children()[0], text=f"/{folder}", variable=var)
+            chk.pack(anchor="w", padx=5)
+
+    def _select_all(self):
+        for v in self.ext_vars.values(): v.set(True)
+        for v in self.folder_vars.values(): v.set(True)
+
+    def _select_none(self):
+        for v in self.ext_vars.values(): v.set(False)
+        for v in self.folder_vars.values(): v.set(False)
+
+    def _on_generate(self):
+        # Gather allowed items
+        allowed_exts = {ext for ext, var in self.ext_vars.items() if var.get()}
+        allowed_folders = {folder for folder, var in self.folder_vars.items() if var.get()}
+        
+        self.destroy()
+        self.generator_callback(allowed_exts, allowed_folders)
+
+# REASON FOR ADDITION: Enhanced Graph Generator with Filtering, Snippet Extraction, and Threading
+class ConfigurableGraphGenerator:
+    """Enhanced Graph Generator with Filtering, Snippet Extraction, and Threading."""
+    
+    def generate_3d_view(self, root_path, allowed_exts, allowed_folders):
+        nodes = []
+        links = []
+        id_counter = 0
+        path_map = {} # path -> id
+        
+        # 1. Build Node Tree (Filtered)
+        for root, dirs, files in os.walk(root_path):
+            # Check if this folder is allowed (based on top-level parent)
+            rel_path = os.path.relpath(root, root_path)
+            top_level = rel_path.split(os.sep)[0]
+            if top_level != "." and top_level not in allowed_folders:
+                # Skip this branch
+                dirs[:] = [] 
+                continue
+
+            # Create node for current folder
+            folder_id = path_map.get(root)
+            if folder_id is None:
+                folder_id = id_counter
+                path_map[root] = folder_id
+                nodes.append({"id": folder_id, "name": os.path.basename(root), "val": 5, "color": "white", "type": "folder"})
+                id_counter += 1
+
+            # Link to parent
+            parent_dir = os.path.dirname(root)
+            if parent_dir in path_map:
+                links.append({"source": path_map[parent_dir], "target": folder_id, "width": 1, "color": "#555", "label": ""})
+
+            # Process files
+            for f in files:
+                _, ext = os.path.splitext(f)
+                if ext.lower() not in allowed_exts: continue
+                
+                file_path = os.path.join(root, f)
+                file_id = id_counter
+                path_map[file_path] = file_id
+                id_counter += 1
+                
+                # Visuals
+                color = self._get_color(ext)
+                try: size = os.path.getsize(file_path) / 1024 
+                except: size = 1
+                visual_size = max(1, min(10, size**0.2))
+
+                nodes.append({"id": file_id, "name": f, "val": visual_size, "color": color, "type": "file", "path": file_path})
+                links.append({"source": folder_id, "target": file_id, "width": 1, "color": "#555", "label": ""})
+
+        # 2. Analyze Associations (Threaded) with Code Snippets
+        # REASON FOR UPDATE: Using ThreadPoolExecutor for speed
+        file_nodes = [n for n in nodes if n["type"] == "file"]
+        
+        # Pre-calculate simple map for name matching
+        name_to_id = {os.path.splitext(n["name"])[0]: n["id"] for n in file_nodes}
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(self._analyze_file, node, name_to_id): node for node in file_nodes}
+            
+            for future in futures:
+                try:
+                    new_links = future.result()
+                    links.extend(new_links)
+                except Exception: pass
+
+        return self._create_html(nodes, links)
+
+    def _analyze_file(self, node, name_to_id):
+        """Worker function to read a file and find imports."""
+        local_links = []
+        if not node["name"].endswith(('.py', '.js', '.ts', '.java', '.cs')): return []
+        
+        try:
+            with open(node["path"], "r", errors="ignore") as f:
+                lines = f.readlines()
+                
+            for line_idx, line in enumerate(lines):
+                line = line.strip()
+                if not line or len(line) > 80: continue # Skip empty or massive lines
+                
+                # Simple heuristic: "import X" or "from X" or "include X"
+                # Check against known file names
+                for other_name, other_id in name_to_id.items():
+                    if other_id == node["id"]: continue
+                    
+                    # Regex for word boundary to avoid partial matches
+                    if re.search(r'\b' + re.escape(other_name) + r'\b', line):
+                        # Found a connection!
+                        # REASON FOR UPDATE: Captured the exact line of code for the visual thread
+                        snippet = f"Line {line_idx+1}: {line[:40]}..." if len(line) > 40 else f"Line {line_idx+1}: {line}"
+                        local_links.append({
+                            "source": node["id"], 
+                            "target": other_id, 
+                            "width": 3, 
+                            "color": "#00ff00",
+                            "label": snippet # This text will appear on the thread
+                        })
+        except: pass
+        return local_links
+
+    def _get_color(self, ext):
+        ext = ext.lower()
+        if ext in ['.py', '.pyw']: return "#3776ab"
+        if ext in ['.js', '.json']: return "#f7df1e"
+        if ext in ['.html', '.css']: return "#e34c26"
+        if ext in ['.md', '.txt']: return "#ffffff"
+        if ext in ['Dockerfile', 'dockerfile']: return "#0db7ed"
+        if ext in ['.tf', '.hcl']: return "#5f43e9" # Terraform Purple
+        return "#ff00ff"
+
+    def _create_html(self, nodes, links):
+        data = json.dumps({"nodes": nodes, "links": links})
+        
+        # REASON FOR UPDATE: Added ThreeSpriteText for text on lines and minDistance for deep zoom
+        # REASON FOR UPDATE: Using explicit https:// to avoid file:// error
+        html_template = f"""
+        <head>
+          <style> body {{ margin: 0; background: #000011; }} </style>
+          <script src="https://unpkg.com/3d-force-graph"></script>
+          <script src="https://unpkg.com/three-spritetext"></script>
+        </head>
+        <body>
+          <div id="3d-graph"></div>
+          <script>
+            const gData = {data};
+
+            const Graph = ForceGraph3D()
+              (document.getElementById('3d-graph'))
+                .graphData(gData)
+                .nodeLabel('name')
+                .nodeColor('color')
+                .nodeVal('val')
+                .linkWidth('width')
+                .linkColor('color')
+                .nodeResolution(16)
+                .backgroundColor('#000011')
+                .linkThreeObjectExtend(true)
+                .linkThreeObject(link => {{
+                    // REASON FOR ADDITION: Draw faint code snippet on the connection thread
+                    if (link.label && link.label.length > 0) {{
+                        const sprite = new SpriteText(link.label);
+                        sprite.color = 'rgba(200, 200, 200, 0.5)'; // Faint grey
+                        sprite.textHeight = 1.5;
+                        return sprite;
+                    }}
+                }})
+                .linkPositionUpdate((sprite, {{ start, end }}) => {{
+                    // Position text in middle of line
+                    if (sprite) {{
+                        const middlePos = Object.assign(...['x', 'y', 'z'].map(c => ({{
+                            [c]: start[c] + (end[c] - start[c]) / 2 
+                        }}))); 
+                        Object.assign(sprite.position, middlePos);
+                    }}
+                }});
+            
+            // REASON FOR UPDATE: Physics tweaks for smoother layout
+            Graph.d3Force('charge').strength(-100);
+            
+            // REASON FOR UPDATE: Allow very close zoom
+            Graph.controls().minDistance = 10;
+            Graph.controls().maxDistance = 10000;
+            
+            Graph.onNodeClick(node => {{
+                const distance = 40;
+                const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
+                Graph.cameraPosition(
+                  {{ x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }}, 
+                  node, 
+                  3000
+                );
+            }});
+          </script>
+        </body>
+        """
+        return html_template
+
 class AuditManager:
     DB_FILE = "audit_conformity_db.json"
 
@@ -83,18 +564,6 @@ class AuditManager:
 
     def get_blueprint_code(self, title):
         return self.blueprints.get(title, "")
-
-    # REASON FOR COMMENTING: Old difflib logic replaced by specific "3 consecutive words" requirement
-    # def find_conformity(self, content):
-    #     matches = []
-    #     threshold = 0.6 
-    #     for name, blueprint in self.blueprints.items():
-    #         if len(blueprint) > len(content) * 2: continue
-    #         matcher = difflib.SequenceMatcher(None, content, blueprint)
-    #         for i, j, n in matcher.get_matching_blocks():
-    #             if n > 15: 
-    #                 matches.append((i, i + n, name))
-    #     return matches
 
     def find_conformity(self, content):
         matches = []
@@ -398,6 +867,10 @@ class ExplorerUI(ttk.Frame):
         self.current_matches = []
         self.audit_lock = threading.Lock()
         
+        # REASON FOR UPDATE: Replaced old GraphGenerator with ConfigurableGraphGenerator
+        # self.graph_generator = GraphGenerator() 
+        self.graph_generator = ConfigurableGraphGenerator()
+        
         self._setup_layout()
         self._setup_menus() 
         self._setup_context_menu() 
@@ -500,12 +973,65 @@ class ExplorerUI(ttk.Frame):
         file_menu.add_command(label="Exit", command=self.master.quit)
         menubar.add_cascade(label="File", menu=file_menu)
         
+        # REASON FOR ADDITION: New Visualize Menu
+        visualize_menu = tk.Menu(menubar, tearoff=0)
+        visualize_menu.add_command(label="Folder Composition", command=self.visualize_folder)
+        # REASON FOR ADDITION: New 3D Visualize Option
+        visualize_menu.add_command(label="3D Network", command=self.visualize_3d_network)
+        menubar.add_cascade(label="Visualize", menu=visualize_menu)
+
         for menu_name in ["Edit", "Selection", "View", "Go", "Run"]:
             dummy_menu = tk.Menu(menubar, tearoff=0)
             dummy_menu.add_command(label=f"{menu_name} Action", state=tk.DISABLED)
             menubar.add_cascade(label=menu_name, menu=dummy_menu)
             
         self.master.config(menu=menubar)
+
+    def visualize_folder(self):
+        """Launches the folder composition visualization."""
+        if self.current_path and os.path.exists(self.current_path):
+            DirectoryVisualizer(self, self.current_path)
+
+    # REASON FOR UPDATE: Main logic to trigger 3D graph generation and open browser. 
+    # Logic updated to open the Configuration Dashboard (VisualizerLauncher) first.
+    def visualize_3d_network(self):
+        """Generates HTML file for 3D view and opens it in browser."""
+        if not self.current_path or not os.path.exists(self.current_path):
+            messagebox.showerror("Error", "Invalid path selected.")
+            return
+
+        # REASON FOR ADDITION: Open Config Window instead of generating directly
+        VisualizerLauncher(self, self.current_path, self._generate_graph_after_config)
+
+        # REASON FOR COMMENTING OUT: Old direct generation logic
+        # try:
+        #     messagebox.showinfo("3D Visualize", "Generating 3D Network... This may take a moment.\nIt will open in your default browser.")
+        #     html_content = self.graph_generator.generate_3d_view(self.current_path)
+        #     
+        #     # Save to temp file
+        #     temp_file = os.path.join(os.getcwd(), "network_graph.html")
+        #     with open(temp_file, "w") as f:
+        #         f.write(html_content)
+        #         
+        #     webbrowser.open(f"file://{temp_file}")
+        #     
+        # except Exception as e:
+        #     messagebox.showerror("Error", f"Failed to generate visualization: {e}")
+
+    # REASON FOR ADDITION: Callback function to generate graph after config is complete
+    def _generate_graph_after_config(self, allowed_exts, allowed_folders):
+        try:
+            messagebox.showinfo("3D Visualize", "Generating 3D Network with Code Snippets... This may take a moment.\nIt will open in your default browser.")
+            html_content = self.graph_generator.generate_3d_view(self.current_path, allowed_exts, allowed_folders)
+            
+            temp_file = os.path.join(os.getcwd(), "network_graph.html")
+            with open(temp_file, "w") as f:
+                f.write(html_content)
+                
+            webbrowser.open(f"file://{temp_file}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate visualization: {e}")
 
     def wizard_add_to_db(self):
         title = simpledialog.askstring("Add Database - Step 1/2", "Enter Title (Index Card):")
@@ -552,32 +1078,6 @@ class ExplorerUI(ttk.Frame):
 
         self.wait_window(win)
         return result_container["code"]
-
-    # REASON FOR COMMENTING: Old single-step logic replaced by wizard_add_to_db
-    # def add_selection_to_audit_db(self):
-    #     try:
-    #         selected_text = self.txt_preview.get("sel.first", "sel.last")
-    #     except tk.TclError:
-    #         selected_text = self.txt_preview.get("1.0", tk.END).strip()
-    #     
-    #     if not selected_text or len(selected_text) < 5:
-    #         messagebox.showwarning("Audit DB", "Please select valid code text to add to the blueprint database.")
-    #         return
-    #
-    #     name = simpledialog.askstring("Add Blueprint", "Enter a TITLE for this code blueprint:")
-    #     if name:
-    #         self.audit_manager.add_blueprint(name, selected_text)
-    #         messagebox.showinfo("Success", f"Blueprint '{name}' added to audit database.")
-    #         self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
-
-    # REASON FOR COMMENTING: Old simple message box replaced by list_audit_db interactive window
-    # def list_audit_db_old(self):
-    #     titles = self.audit_manager.get_all_titles()
-    #     msg = "\n".join(titles) if titles else "Database is empty."
-    #     if len(titles) > 20:
-    #          self._ask_multiline("List Database", "Current Blueprints:", msg)
-    #     else:
-    #         messagebox.showinfo("List Database", f"Current Blueprints:\n\n{msg}")
 
     def list_audit_db(self):
         win = tk.Toplevel(self)

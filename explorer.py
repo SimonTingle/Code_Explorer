@@ -246,6 +246,53 @@ class VisualizerLauncher(tk.Toplevel):
 
 class ConfigurableGraphGenerator:
     """Enhanced Graph Generator with Filtering, Snippet Extraction, and Threading."""
+    def _analyze_relationships(self, nodes, file_nodes):
+        """
+        Scans code in file_nodes to find mentions of other file names 
+        within the same project structure.
+        """
+        new_links = []
+        # Map of base filename (without ext) to its node ID
+        # e.g., 'auth' -> 105
+        name_to_id = {os.path.splitext(n["name"])[0]: n["id"] for n in file_nodes}
+        
+        def scan_single_file(source_node):
+            local_links = []
+            try:
+                # Limit scanning to text-based code files only
+                if not source_node["name"].endswith(('.py', '.js', '.ts', '.java', '.cs', '.tf')):
+                    return []
+                
+                with open(source_node["path"], "r", errors="ignore") as f:
+                    content = f.read()
+                    
+                # Look for mentions of other "Planets" (files)
+                for target_name, target_id in name_to_id.items():
+                    if target_id == source_node["id"]:
+                        continue
+                    
+                    # Regex check for word boundary to ensure it's a real reference
+                    # e.g., 'import auth' or 'auth.login()'
+                    if re.search(r'\b' + re.escape(target_name) + r'\b', content):
+                        local_links.append({
+                            "source": source_node["id"],
+                            "target": target_id,
+                            "width": 2,
+                            "color": "#00FF00", # Bright green for logic links
+                            "type": "logic_link",
+                            "label": f"Logic: {source_node['name']} -> {target_name}"
+                        })
+            except:
+                pass
+            return local_links
+
+        # REASON: Using ThreadPoolExecutor to prevent blocking the HTTP server or UI
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(scan_single_file, file_nodes))
+            for res in results:
+                new_links.extend(res)
+                
+        return new_links
     
     def generate_3d_view(self, root_path, allowed_exts, allowed_folders):
         graph_data = self._generate_data(root_path, allowed_exts, allowed_folders)
@@ -339,7 +386,12 @@ class ConfigurableGraphGenerator:
                     "color": "#333333", 
                     "type": "orbit"
                 })
-
+        # --- NEW LOGIC LINKS START HERE ---
+        file_nodes = [n for n in nodes if n["type"] == "file"]
+        # REASON: Run the code assessment to find inter-planetary logic threads
+        logic_links = self._analyze_relationships(nodes, file_nodes)
+        links.extend(logic_links)
+        # ----------------------------------
         return {"nodes": nodes, "links": links}
 
     # REASON FOR UPDATE: Old _generate_data (Generic) logic commented out to preserve history
@@ -360,7 +412,7 @@ class ConfigurableGraphGenerator:
         return "#ff00ff"
 
     def _get_html_template(self):
-        # REASON FOR UPDATE: Updated HTML to use Physics specific to Solar Systems (Gravity vs Orbit)
+        # REASON: Added linkDirectionalParticles and conditional coloring for Logic Links
         return r"""
         <!DOCTYPE html>
         <html>
@@ -383,8 +435,13 @@ class ConfigurableGraphGenerator:
                     .nodeColor('color')
                     .nodeVal('val')
                     .nodeResolution(24)
-                    .linkWidth(l => l.type === 'gravity' ? 1 : 0.2)
-                    .linkColor(l => l.type === 'gravity' ? '#555' : '#333')
+                    /* REASON: Logic links are thicker and neon green; gravity/orbits remain subtle */
+                    .linkWidth(l => l.type === 'logic_link' ? 2 : (l.type === 'gravity' ? 1 : 0.2))
+                    .linkColor(l => l.type === 'logic_link' ? '#00FF00' : (l.type === 'gravity' ? '#555' : '#333'))
+                    /* REASON: Added glowing particles to logic links to visualize code flow */
+                    .linkDirectionalParticles(l => l.type === 'logic_link' ? 4 : 0)
+                    .linkDirectionalParticleSpeed(0.01)
+                    .linkDirectionalParticleWidth(2)
                     .backgroundColor('#000005')
                     .onNodeClick(node => {
                         const dist = 50;

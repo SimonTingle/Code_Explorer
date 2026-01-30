@@ -11,9 +11,13 @@ import time
 import threading
 import json 
 import difflib 
-import random # REASON: Needed for random colors in Visualization
-import webbrowser # REASON: Needed to open the 3D HTML file
-from concurrent.futures import ThreadPoolExecutor # REASON: Needed for multi-threaded file parsing in 3D generation
+import random 
+import webbrowser 
+from concurrent.futures import ThreadPoolExecutor
+# --- MISSING IMPORTS ADDED BELOW ---
+import http.server
+import socketserver 
+# -----------------------------------
 
 try:
     import psutil
@@ -62,8 +66,6 @@ class ToolTip:
             self.tip_window = None
             self.label = None
 
-# REASON FOR ADDITION: Class to handle generating charts for directory visualization (Pie Chart)
-# REASON FOR UPDATE: Fixed invisible text bug by forcing fill="black" on white canvas
 class DirectoryVisualizer(tk.Toplevel):
     def __init__(self, parent, path):
         super().__init__(parent)
@@ -135,125 +137,7 @@ class DirectoryVisualizer(tk.Toplevel):
             ly += 20
             if ly > 400: break
 
-# REASON FOR COMMENTING OUT: Replaced by ConfigurableGraphGenerator to support filtering, 
-# code snippets, and multi-threading as requested.
-# class GraphGenerator:
-#     """Generates a JSON structure for 3D Force Graph and injects it into HTML."""
-#     
-#     def generate_3d_view(self, root_path):
-#         nodes = []
-#         links = []
-#         id_counter = 0
-#         path_map = {} # path -> id
-#
-#         # 1. Walk directory to build Nodes (Planets) and Directory Links
-#         for root, dirs, files in os.walk(root_path):
-#             # Create node for current folder
-#             folder_id = path_map.get(root)
-#             if folder_id is None:
-#                 folder_id = id_counter
-#                 path_map[root] = folder_id
-#                 nodes.append({"id": folder_id, "name": os.path.basename(root), "val": 5, "color": "white", "type": "folder"})
-#                 id_counter += 1
-#
-#             # Link folder to parent
-#             parent_dir = os.path.dirname(root)
-#             if parent_dir in path_map:
-#                 links.append({"source": path_map[parent_dir], "target": folder_id, "width": 1, "color": "#555"})
-#
-#             # Process files
-#             for f in files:
-#                 file_path = os.path.join(root, f)
-#                 file_id = id_counter
-#                 path_map[file_path] = file_id
-#                 id_counter += 1
-#                 
-#                 # Determine color/size based on extension
-#                 _, ext = os.path.splitext(f)
-#                 color = self._get_color(ext)
-#                 size = 1 # Default size
-#                 
-#                 # Try getting actual size for "Mass"
-#                 try: size = os.path.getsize(file_path) / 1024 # KB
-#                 except: pass
-#                 # Log scale for size so huge files don't cover everything
-#                 visual_size = max(1, min(10, size**0.2)) 
-#
-#                 nodes.append({"id": file_id, "name": f, "val": visual_size, "color": color, "type": "file", "path": file_path})
-#                 
-#                 # Link file to its folder
-#                 links.append({"source": folder_id, "target": file_id, "width": 1, "color": "#555"})
-#
-#         # 2. Analyze Associations (The "Thick Lines")
-#         # Limit to first 1000 nodes to prevent browser crash on huge repos
-#         if len(nodes) < 1000:
-#             for node in nodes:
-#                 if node["type"] == "file" and node["name"].endswith(".py"):
-#                     try:
-#                         with open(node["path"], "r", errors="ignore") as f:
-#                             content = f.read()
-#                             # Naive check: if 'import X' and X is another filename
-#                             for other_node in nodes:
-#                                 if other_node["type"] == "file" and other_node != node:
-#                                     name_no_ext = os.path.splitext(other_node["name"])[0]
-#                                     if len(name_no_ext) > 2 and f"import {name_no_ext}" in content:
-#                                         links.append({"source": node["id"], "target": other_node["id"], "width": 4, "color": "#00ff00"})
-#                     except: pass
-#
-#         return self._create_html(nodes, links)
-#
-#     def _get_color(self, ext):
-#         ext = ext.lower()
-#         if ext in ['.py', '.pyw']: return "#3776ab" # Python Blue
-#         if ext in ['.js', '.json']: return "#f7df1e" # JS Yellow
-#         if ext in ['.html', '.css']: return "#e34c26" # HTML Orange
-#         if ext in ['.md', '.txt']: return "#ffffff" # White
-#         if ext in ['Dockerfile', 'dockerfile']: return "#0db7ed" # Docker Blue
-#         return "#ff00ff" # Unknown Magenta
-#
-#     def _create_html(self, nodes, links):
-#         data = json.dumps({"nodes": nodes, "links": links})
-#         
-#         # REASON FOR UPDATE: Fixed 'ReferenceError' by using explicit https:// protocol for local file execution
-#         html_template = f"""
-#         <head>
-#           <style> body {{ margin: 0; background: #000011; }} </style>
-#           <script src="https://unpkg.com/3d-force-graph"></script>
-#         </head>
-#         <body>
-#           <div id="3d-graph"></div>
-#           <script>
-#             const gData = {data};
-#
-#             const Graph = ForceGraph3D()
-#               (document.getElementById('3d-graph'))
-#                 .graphData(gData)
-#                 .nodeLabel('name')
-#                 .nodeColor('color')
-#                 .nodeVal('val')
-#                 .linkWidth('width')
-#                 .linkColor('color')
-#                 .nodeResolution(16)
-#                 .backgroundColor('#000011');
-#             
-#             Graph.d3Force('charge').strength(-50);
-#             
-#             Graph.onNodeClick(node => {{
-#                 const distance = 40;
-#                 const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
-#
-#                 Graph.cameraPosition(
-#                   {{ x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }}, 
-#                   node, 
-#                   3000
-#                 );
-#             }});
-#           </script>
-#         </body>
-#         """
-#         return html_template
 
-# REASON FOR ADDITION: New Dashboard Window to configure the 3D visualization (Dropdowns/Checkboxes)
 class VisualizerLauncher(tk.Toplevel):
     def __init__(self, parent, root_path, generator_callback):
         super().__init__(parent)
@@ -360,40 +244,70 @@ class VisualizerLauncher(tk.Toplevel):
         self.destroy()
         self.generator_callback(allowed_exts, allowed_folders)
 
-# REASON FOR ADDITION: Enhanced Graph Generator with Filtering, Snippet Extraction, and Threading
 class ConfigurableGraphGenerator:
     """Enhanced Graph Generator with Filtering, Snippet Extraction, and Threading."""
     
     def generate_3d_view(self, root_path, allowed_exts, allowed_folders):
+        graph_data = self._generate_data(root_path, allowed_exts, allowed_folders)
+        
+        with open("graph_data.json", "w") as f:
+            json.dump(graph_data, f)
+        with open("network_graph.html", "w") as f:
+            f.write(self._get_html_template())
+        return "network_graph.html"
+
+    # REASON FOR UPDATE: Merged Planetary/Solar System Logic here.
+    # Replaced the generic data generation with Star/Planet logic.
+    def _generate_data(self, root_path, allowed_exts, allowed_folders):
         nodes = []
         links = []
         id_counter = 0
-        path_map = {} # path -> id
+        path_map = {} 
         
-        # 1. Build Node Tree (Filtered)
+        # SOLAR SYSTEM LOGIC: Ignore system folders for cleaner galaxy
+        ignored_directories = {
+            'node_modules', 'lib', 'libs', 'bin', 'obj', 'include', 'vendor', 
+            'venv', 'env', '.git', '.idea', '.vscode', '__pycache__', 'dist', 'build'
+        }
+
         for root, dirs, files in os.walk(root_path):
-            # Check if this folder is allowed (based on top-level parent)
+            dirs[:] = [d for d in dirs if d not in ignored_directories]
+            
             rel_path = os.path.relpath(root, root_path)
             top_level = rel_path.split(os.sep)[0]
             if top_level != "." and top_level not in allowed_folders:
-                # Skip this branch
                 dirs[:] = [] 
                 continue
 
-            # Create node for current folder
             folder_id = path_map.get(root)
             if folder_id is None:
                 folder_id = id_counter
                 path_map[root] = folder_id
-                nodes.append({"id": folder_id, "name": os.path.basename(root), "val": 5, "color": "white", "type": "folder"})
                 id_counter += 1
+                
+                is_root = (root == root_path)
+                star_size = 40 if is_root else 15
+                star_color = "#FFFFE0" if is_root else "#FFFFFF"
+                
+                # FOLDER = STAR
+                nodes.append({
+                    "id": folder_id, 
+                    "name": os.path.basename(root) if not is_root else "SUN (Root)", 
+                    "val": star_size, 
+                    "color": star_color, 
+                    "type": "folder"
+                })
 
-            # Link to parent
             parent_dir = os.path.dirname(root)
             if parent_dir in path_map:
-                links.append({"source": path_map[parent_dir], "target": folder_id, "width": 1, "color": "#555", "label": ""})
+                links.append({
+                    "source": path_map[parent_dir], 
+                    "target": folder_id, 
+                    "width": 1.5, 
+                    "color": "#666666", 
+                    "type": "gravity"
+                })
 
-            # Process files
             for f in files:
                 _, ext = os.path.splitext(f)
                 if ext.lower() not in allowed_exts: continue
@@ -403,142 +317,93 @@ class ConfigurableGraphGenerator:
                 path_map[file_path] = file_id
                 id_counter += 1
                 
-                # Visuals
                 color = self._get_color(ext)
                 try: size = os.path.getsize(file_path) / 1024 
                 except: size = 1
-                visual_size = max(1, min(10, size**0.2))
+                visual_size = max(2, min(10, size**0.2))
 
-                nodes.append({"id": file_id, "name": f, "val": visual_size, "color": color, "type": "file", "path": file_path})
-                links.append({"source": folder_id, "target": file_id, "width": 1, "color": "#555", "label": ""})
-
-        # 2. Analyze Associations (Threaded) with Code Snippets
-        # REASON FOR UPDATE: Using ThreadPoolExecutor for speed
-        file_nodes = [n for n in nodes if n["type"] == "file"]
-        
-        # Pre-calculate simple map for name matching
-        name_to_id = {os.path.splitext(n["name"])[0]: n["id"] for n in file_nodes}
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {executor.submit(self._analyze_file, node, name_to_id): node for node in file_nodes}
-            
-            for future in futures:
-                try:
-                    new_links = future.result()
-                    links.extend(new_links)
-                except Exception: pass
-
-        return self._create_html(nodes, links)
-
-    def _analyze_file(self, node, name_to_id):
-        """Worker function to read a file and find imports."""
-        local_links = []
-        if not node["name"].endswith(('.py', '.js', '.ts', '.java', '.cs')): return []
-        
-        try:
-            with open(node["path"], "r", errors="ignore") as f:
-                lines = f.readlines()
+                # FILE = PLANET
+                nodes.append({
+                    "id": file_id, 
+                    "name": f, 
+                    "val": visual_size, 
+                    "color": color, 
+                    "type": "file", 
+                    "path": file_path
+                })
                 
-            for line_idx, line in enumerate(lines):
-                line = line.strip()
-                if not line or len(line) > 80: continue # Skip empty or massive lines
-                
-                # Simple heuristic: "import X" or "from X" or "include X"
-                # Check against known file names
-                for other_name, other_id in name_to_id.items():
-                    if other_id == node["id"]: continue
-                    
-                    # Regex for word boundary to avoid partial matches
-                    if re.search(r'\b' + re.escape(other_name) + r'\b', line):
-                        # Found a connection!
-                        # REASON FOR UPDATE: Captured the exact line of code for the visual thread
-                        snippet = f"Line {line_idx+1}: {line[:40]}..." if len(line) > 40 else f"Line {line_idx+1}: {line}"
-                        local_links.append({
-                            "source": node["id"], 
-                            "target": other_id, 
-                            "width": 3, 
-                            "color": "#00ff00",
-                            "label": snippet # This text will appear on the thread
-                        })
-        except: pass
-        return local_links
+                links.append({
+                    "source": folder_id, 
+                    "target": file_id, 
+                    "width": 0.5, 
+                    "color": "#333333", 
+                    "type": "orbit"
+                })
+
+        return {"nodes": nodes, "links": links}
+
+    # REASON FOR UPDATE: Old _generate_data (Generic) logic commented out to preserve history
+    # def _generate_data_OLD_GENERIC(self, root_path, allowed_exts, allowed_folders):
+    #    # ... (Old generic logic that treated everything as nodes) ...
+    #    pass
 
     def _get_color(self, ext):
         ext = ext.lower()
         if ext in ['.py', '.pyw']: return "#3776ab"
-        if ext in ['.js', '.json']: return "#f7df1e"
-        if ext in ['.html', '.css']: return "#e34c26"
-        if ext in ['.md', '.txt']: return "#ffffff"
-        if ext in ['Dockerfile', 'dockerfile']: return "#0db7ed"
-        if ext in ['.tf', '.hcl']: return "#5f43e9" # Terraform Purple
+        if ext in ['.js', '.json', '.ts']: return "#f7df1e"
+        if ext in ['.html', '.css', '.scss']: return "#e34c26"
+        if ext in ['.md', '.txt', '.rst']: return "#dddddd"
+        if ext in ['Dockerfile', 'dockerfile', '.yml', '.yaml']: return "#0db7ed"
+        if ext in ['.tf', '.hcl']: return "#5f43e9"
+        if ext in ['.c', '.cpp', '.h', '.hpp']: return "#00599C"
+        if ext in ['.java', '.jar']: return "#b07219"
         return "#ff00ff"
 
-    def _create_html(self, nodes, links):
-        data = json.dumps({"nodes": nodes, "links": links})
-        
-        # REASON FOR UPDATE: Added ThreeSpriteText for text on lines and minDistance for deep zoom
-        # REASON FOR UPDATE: Using explicit https:// to avoid file:// error
-        html_template = f"""
+    def _get_html_template(self):
+        # REASON FOR UPDATE: Updated HTML to use Physics specific to Solar Systems (Gravity vs Orbit)
+        return r"""
+        <!DOCTYPE html>
+        <html>
         <head>
-          <style> body {{ margin: 0; background: #000011; }} </style>
-          <script src="https://unpkg.com/3d-force-graph"></script>
-          <script src="https://unpkg.com/three-spritetext"></script>
+          <style> body { margin: 0; background: #000005; overflow: hidden; } </style>
+          <script src="https://unpkg.com/three@0.160.0/build/three.js"></script>
+          <script src="https://unpkg.com/3d-force-graph@1.73.2/dist/3d-force-graph.min.js"></script>
+          <script src="https://unpkg.com/three-spritetext@1.8.1/dist/three-spritetext.min.js"></script>
         </head>
         <body>
           <div id="3d-graph"></div>
           <script>
-            const gData = {data};
+            async function load() {
+                const r = await fetch('graph_data.json?t=' + Date.now());
+                const data = await r.json();
+                
+                const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
+                    .graphData(data)
+                    .nodeLabel('name')
+                    .nodeColor('color')
+                    .nodeVal('val')
+                    .nodeResolution(24)
+                    .linkWidth(l => l.type === 'gravity' ? 1 : 0.2)
+                    .linkColor(l => l.type === 'gravity' ? '#555' : '#333')
+                    .backgroundColor('#000005')
+                    .onNodeClick(node => {
+                        const dist = 50;
+                        const distRatio = 1 + dist/Math.hypot(node.x, node.y, node.z);
+                        Graph.cameraPosition(
+                            { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
+                            node, 
+                            3000
+                        );
+                    });
 
-            const Graph = ForceGraph3D()
-              (document.getElementById('3d-graph'))
-                .graphData(gData)
-                .nodeLabel('name')
-                .nodeColor('color')
-                .nodeVal('val')
-                .linkWidth('width')
-                .linkColor('color')
-                .nodeResolution(16)
-                .backgroundColor('#000011')
-                .linkThreeObjectExtend(true)
-                .linkThreeObject(link => {{
-                    // REASON FOR ADDITION: Draw faint code snippet on the connection thread
-                    if (link.label && link.label.length > 0) {{
-                        const sprite = new SpriteText(link.label);
-                        sprite.color = 'rgba(200, 200, 200, 0.5)'; // Faint grey
-                        sprite.textHeight = 1.5;
-                        return sprite;
-                    }}
-                }})
-                .linkPositionUpdate((sprite, {{ start, end }}) => {{
-                    // Position text in middle of line
-                    if (sprite) {{
-                        const middlePos = Object.assign(...['x', 'y', 'z'].map(c => ({{
-                            [c]: start[c] + (end[c] - start[c]) / 2 
-                        }}))); 
-                        Object.assign(sprite.position, middlePos);
-                    }}
-                }});
-            
-            // REASON FOR UPDATE: Physics tweaks for smoother layout
-            Graph.d3Force('charge').strength(-100);
-            
-            // REASON FOR UPDATE: Allow very close zoom
-            Graph.controls().minDistance = 10;
-            Graph.controls().maxDistance = 10000;
-            
-            Graph.onNodeClick(node => {{
-                const distance = 40;
-                const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
-                Graph.cameraPosition(
-                  {{ x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }}, 
-                  node, 
-                  3000
-                );
-            }});
+                Graph.d3Force('charge').strength(node => node.type === 'folder' ? -200 : -30);
+                Graph.d3Force('link').distance(link => link.type === 'gravity' ? 100 : 30);
+            }
+            load();
           </script>
         </body>
+        </html>
         """
-        return html_template
 
 class AuditManager:
     DB_FILE = "audit_conformity_db.json"
@@ -850,36 +715,42 @@ class SystemMonitor(ttk.Frame):
         elif b < 1024**2: return f"{b/1024:.0f}K"
         else: return f"{b/1024**2:.1f}M"
 
+class LiveServer(threading.Thread):
+    def __init__(self, port):
+        super().__init__(daemon=True)
+        self.port = port
+        self.httpd = None
+    def run(self):
+        os.chdir(os.path.dirname(os.path.abspath(__file__)))
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, format, *args): pass 
+            def end_headers(self):
+                self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+                super().end_headers()
+        try:
+            socketserver.TCPServer.allow_reuse_address = True
+            self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", self.port), Handler)
+            self.httpd.serve_forever()
+        except Exception as e: print(f"Server failed to start: {e}")
+
 class ExplorerUI(ttk.Frame):
     def __init__(self, parent, logic_handler):
         super().__init__(parent)
         self.logic = logic_handler
         self.current_path = os.path.expanduser("~")
-        self.is_searching = False
-        self.sort_reverse = False
-        self.running_threads = 0 
-        self.cancel_event = threading.Event()
-        self.fav_file = "favorites.json"
-        self.preview_offset = 0
-        self.current_preview_file = None
+        self.is_searching = False; self.sort_reverse = False; self.running_threads = 0 
+        self.cancel_event = threading.Event(); self.fav_file = "favorites.json"
+        self.preview_offset = 0; self.current_preview_file = None
+        self.audit_manager = AuditManager(); self.current_matches = []
         
-        self.audit_manager = AuditManager()
-        self.current_matches = []
-        self.audit_lock = threading.Lock()
+        self.server_port = 8099
+        self.server_thread = LiveServer(self.server_port)
+        self.server_thread.start()
         
-        # REASON FOR UPDATE: Replaced old GraphGenerator with ConfigurableGraphGenerator
-        # self.graph_generator = GraphGenerator() 
         self.graph_generator = ConfigurableGraphGenerator()
         
-        self._setup_layout()
-        self._setup_menus() 
-        self._setup_context_menu() 
-        self._bind_events()
-        self._load_favorites() 
-        
-        self.highlighter = SyntaxHighlighter(self.txt_preview)
-        self.audit_tip = ToolTip(self.txt_preview)
-
+        self._setup_layout(); self._setup_menus(); self._setup_context_menu(); self._bind_events(); self._load_favorites() 
+        self.highlighter = SyntaxHighlighter(self.txt_preview); self.audit_tip = ToolTip(self.txt_preview)
         self.load_path(self.current_path)
 
     def _setup_layout(self):
@@ -898,241 +769,112 @@ class ExplorerUI(ttk.Frame):
         ttk.Button(nav_frame, text="Go", command=self.perform_search, width=4).pack(side=tk.LEFT)
         self.clear_btn = ttk.Button(nav_frame, text="X", width=2, command=self.clear_search, state=tk.DISABLED)
         self.clear_btn.pack(side=tk.LEFT, padx=(2, 0))
-        
         monitor_frame = ttk.Frame(top_container); monitor_frame.pack(side=tk.RIGHT, padx=(5, 0))
         self.monitor = SystemMonitor(monitor_frame); self.monitor.pack(side=tk.LEFT)
 
         mem_frame = ttk.Frame(self, padding=(5, 0, 5, 5))
         mem_frame.pack(fill=tk.X)
-        ttk.Label(mem_frame, text="Memory slots:", font=("Helvetica", 9, "italic")).pack(side=tk.LEFT, padx=(5, 5))
-        
         self.mem_buttons = []
         self.mem_tips = []
         for i in range(4):
             btn = ttk.Button(mem_frame, text=f"[{i+1}] Empty", width=12)
             btn.pack(side=tk.LEFT, padx=2)
             btn.configure(command=lambda idx=i: self._jump_to_favorite(idx))
-            btn.bind("<Button-2>", lambda e, idx=i: self._save_to_favorite(idx)) 
-            btn.bind("<Button-3>", lambda e, idx=i: self._save_to_favorite(idx)) 
-            tip = ToolTip(btn, "")
+            btn.bind("<Button-2>", lambda e, idx=i: self._save_to_favorite(idx))
+            btn.bind("<Button-3>", lambda e, idx=i: self._save_to_favorite(idx))
             self.mem_buttons.append(btn)
-            self.mem_tips.append(tip)
+            self.mem_tips.append(ToolTip(btn, ""))
 
         self.paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        self.tree_frame = ttk.Frame(self.paned_window); self.paned_window.add(self.tree_frame, weight=1)
-        self.cols = ("size", "modified")
-        self.tree = ttk.Treeview(self.tree_frame, columns=self.cols, selectmode="browse")
+        
+        self.tree_frame = ttk.Frame(self.paned_window)
+        self.paned_window.add(self.tree_frame, weight=1)
+        self.tree = ttk.Treeview(self.tree_frame, columns=("size", "modified"), selectmode="browse")
         self.tree.heading("#0", text="Name ↑↓", command=lambda: self._sort_column("#0"))
         self.tree.heading("size", text="Size ↑↓", command=lambda: self._sort_column("size"))
         self.tree.heading("modified", text="Date Modified ↑↓", command=lambda: self._sort_column("modified"))
-        self.tree.column("#0", stretch=True, width=250)
-        self.tree.column("size", width=100, anchor=tk.E)
-        self.tree.column("modified", width=150)
-        self.tree.tag_configure('folder', foreground='#007AFF') 
-        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set); self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.column("#0", minwidth=200, width=300, stretch=True)
+        self.tree.column("size", minwidth=60, width=80, anchor=tk.E)
+        self.tree.column("modified", minwidth=100, width=120)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.preview_frame = ttk.Frame(self.paned_window, relief="sunken", padding=5)
         self.paned_window.add(self.preview_frame, weight=0)
-        
-        preview_header = ttk.Frame(self.preview_frame)
-        preview_header.pack(fill=tk.X, pady=(0, 5))
-        
-        self.lbl_meta = ttk.Label(preview_header, text="Select a file", font=("Helvetica", 10, "bold"))
-        self.lbl_meta.pack(side=tk.LEFT, anchor="nw")
-        
-        self.copy_btn = ttk.Button(preview_header, text="Copy", width=6, command=self.copy_preview_to_clipboard)
-        
+        self.lbl_meta = ttk.Label(self.preview_frame, text="Select a file")
+        self.lbl_meta.pack(fill=tk.X)
+        self.copy_btn = ttk.Button(self.preview_frame, text="Copy", command=self.copy_preview_to_clipboard)
         self.text_container = ttk.Frame(self.preview_frame)
         self.text_container.pack(fill=tk.BOTH, expand=True)
-
         self.txt_preview = tk.Text(self.text_container, wrap="none", height=10, width=35, state=tk.DISABLED)
-        self.h_scroll = ttk.Scrollbar(self.text_container, orient=tk.HORIZONTAL, command=self.txt_preview.xview)
-        self.txt_preview.configure(xscrollcommand=self.h_scroll.set)
-        
-        self.h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         self.txt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
         self.load_more_btn = ttk.Button(self.preview_frame, text="Load More...", command=self.load_next_chunk)
 
     def _setup_menus(self):
         menubar = tk.Menu(self.master)
-        
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="New Window", state=tk.DISABLED)
-        file_menu.add_separator()
+        file_menu = tk.Menu(menubar, tearoff=0); file_menu.add_command(label="Exit", command=self.master.quit); menubar.add_cascade(label="File", menu=file_menu)
         
         db_menu = tk.Menu(file_menu, tearoff=0)
         db_menu.add_command(label="Add Database", command=self.wizard_add_to_db)
         db_menu.add_command(label="List Database", command=self.list_audit_db)
-        
         file_menu.add_cascade(label="Database", menu=db_menu)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.master.quit)
-        menubar.add_cascade(label="File", menu=file_menu)
         
-        # REASON FOR ADDITION: New Visualize Menu
-        visualize_menu = tk.Menu(menubar, tearoff=0)
-        visualize_menu.add_command(label="Folder Composition", command=self.visualize_folder)
-        # REASON FOR ADDITION: New 3D Visualize Option
-        visualize_menu.add_command(label="3D Network", command=self.visualize_3d_network)
-        menubar.add_cascade(label="Visualize", menu=visualize_menu)
-
-        for menu_name in ["Edit", "Selection", "View", "Go", "Run"]:
-            dummy_menu = tk.Menu(menubar, tearoff=0)
-            dummy_menu.add_command(label=f"{menu_name} Action", state=tk.DISABLED)
-            menubar.add_cascade(label=menu_name, menu=dummy_menu)
-            
+        vis_menu = tk.Menu(menubar, tearoff=0)
+        vis_menu.add_command(label="Folder Composition", command=self.visualize_folder)
+        vis_menu.add_command(label="3D Network", command=self.visualize_3d_network)
+        menubar.add_cascade(label="Visualize", menu=vis_menu)
         self.master.config(menu=menubar)
 
     def visualize_folder(self):
-        """Launches the folder composition visualization."""
-        if self.current_path and os.path.exists(self.current_path):
-            DirectoryVisualizer(self, self.current_path)
-
-    # REASON FOR UPDATE: Main logic to trigger 3D graph generation and open browser. 
-    # Logic updated to open the Configuration Dashboard (VisualizerLauncher) first.
+        if self.current_path and os.path.exists(self.current_path): DirectoryVisualizer(self, self.current_path)
+    
     def visualize_3d_network(self):
-        """Generates HTML file for 3D view and opens it in browser."""
-        if not self.current_path or not os.path.exists(self.current_path):
-            messagebox.showerror("Error", "Invalid path selected.")
-            return
-
-        # REASON FOR ADDITION: Open Config Window instead of generating directly
-        VisualizerLauncher(self, self.current_path, self._generate_graph_after_config)
-
-        # REASON FOR COMMENTING OUT: Old direct generation logic
-        # try:
-        #     messagebox.showinfo("3D Visualize", "Generating 3D Network... This may take a moment.\nIt will open in your default browser.")
-        #     html_content = self.graph_generator.generate_3d_view(self.current_path)
-        #     
-        #     # Save to temp file
-        #     temp_file = os.path.join(os.getcwd(), "network_graph.html")
-        #     with open(temp_file, "w") as f:
-        #         f.write(html_content)
-        #         
-        #     webbrowser.open(f"file://{temp_file}")
-        #     
-        # except Exception as e:
-        #     messagebox.showerror("Error", f"Failed to generate visualization: {e}")
-
-    # REASON FOR ADDITION: Callback function to generate graph after config is complete
-    def _generate_graph_after_config(self, allowed_exts, allowed_folders):
+        if not self.current_path or not os.path.exists(self.current_path): messagebox.showerror("Error", "Invalid path."); return
+        VisualizerLauncher(self, self.current_path, self._start_live_generation)
+    
+    def _start_live_generation(self, allowed_exts, allowed_folders):
         try:
-            messagebox.showinfo("3D Visualize", "Generating 3D Network with Code Snippets... This may take a moment.\nIt will open in your default browser.")
-            html_content = self.graph_generator.generate_3d_view(self.current_path, allowed_exts, allowed_folders)
-            
-            temp_file = os.path.join(os.getcwd(), "network_graph.html")
-            with open(temp_file, "w") as f:
-                f.write(html_content)
-                
-            webbrowser.open(f"file://{temp_file}")
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to generate visualization: {e}")
+            self.graph_generator.generate_3d_view(self.current_path, allowed_exts, allowed_folders)
+            url = f"http://127.0.0.1:{self.server_port}/network_graph.html"
+            self.after(1000, lambda: webbrowser.open(url))
+            def update_loop():
+                while True:
+                    time.sleep(60); self.graph_generator.generate_3d_view(self.current_path, allowed_exts, allowed_folders)
+            threading.Thread(target=update_loop, daemon=True).start()
+        except Exception as e: messagebox.showerror("Error", f"Visualizer failed: {e}")
 
     def wizard_add_to_db(self):
         title = simpledialog.askstring("Add Database - Step 1/2", "Enter Title (Index Card):")
         if not title: return
-
-        try:
-            initial_code = self.txt_preview.get("sel.first", "sel.last")
-        except tk.TclError:
-            initial_code = ""
-
-        code = self._ask_multiline("Add Database - Step 2/2", "Enter/Edit Code Block:", initial_code)
-        
-        if code and len(code.strip()) > 0:
-            self.audit_manager.add_blueprint(title, code)
-            messagebox.showinfo("Success", f"Saved '{title}' to database.")
-            self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
-        else:
-            messagebox.showwarning("Cancelled", "No code entered. Database entry cancelled.")
-
-    def _ask_multiline(self, title, prompt, initial_value=""):
+        try: initial_code = self.txt_preview.get("sel.first", "sel.last")
+        except tk.TclError: initial_code = ""
         win = tk.Toplevel(self)
-        win.title(title)
+        win.title("Add Code Blueprint")
         win.geometry("500x400")
-        
-        tk.Label(win, text=prompt, font=("Helvetica", 10, "bold")).pack(pady=5)
-        
+        tk.Label(win, text="Paste/Edit Code Block to Match:", font=("Helvetica", 10, "bold")).pack(pady=5)
         txt = tk.Text(win, height=15, width=60, font=("Menlo", 10))
         txt.pack(padx=10, pady=5, expand=True, fill=tk.BOTH)
-        txt.insert("1.0", initial_value)
-        
-        result_container = {"code": None}
-
-        def on_ok():
-            result_container["code"] = txt.get("1.0", tk.END).strip()
+        txt.insert("1.0", initial_code)
+        def on_save():
+            code = txt.get("1.0", tk.END).strip()
+            if code:
+                self.audit_manager.add_blueprint(title, code)
+                messagebox.showinfo("Success", f"Saved '{title}' to database.")
+                self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
             win.destroy()
-
-        def on_cancel():
-            win.destroy()
-
-        btn_frame = tk.Frame(win)
-        btn_frame.pack(pady=10)
-        ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Save to Database", command=on_ok).pack(side=tk.LEFT, padx=5)
-
-        self.wait_window(win)
-        return result_container["code"]
+        ttk.Button(win, text="Save", command=on_save).pack(pady=10)
 
     def list_audit_db(self):
         win = tk.Toplevel(self)
         win.title("Database Manager")
         win.geometry("400x500")
-
         list_frame = ttk.Frame(win, padding=10)
         list_frame.pack(fill=tk.BOTH, expand=True)
-
-        lbl = ttk.Label(list_frame, text="Stored Blueprints:", font=("Helvetica", 10, "bold"))
-        lbl.pack(anchor="w", pady=(0, 5))
-
-        lb_frame = ttk.Frame(list_frame)
-        lb_frame.pack(fill=tk.BOTH, expand=True)
-        
-        scrollbar = ttk.Scrollbar(lb_frame, orient=tk.VERTICAL)
-        lb = tk.Listbox(lb_frame, yscrollcommand=scrollbar.set, font=("Menlo", 10))
-        scrollbar.config(command=lb.yview)
-        
+        lb = tk.Listbox(list_frame, font=("Menlo", 10))
         lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
         titles = sorted(self.audit_manager.get_all_titles())
-        for t in titles:
-            lb.insert(tk.END, t)
-
-        def edit_selected():
-            sel = lb.curselection()
-            if not sel: return
-            title = lb.get(sel[0])
-            current_code = self.audit_manager.get_blueprint_code(title)
-            new_code = self._ask_multiline(f"Edit '{title}'", "Edit Code Block:", current_code)
-            if new_code is not None:
-                self.audit_manager.add_blueprint(title, new_code)
-                messagebox.showinfo("Success", f"Updated '{title}'")
-                self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
-
-        btn_frame = ttk.Frame(win, padding=10)
-        btn_frame.pack(fill=tk.X)
-        
-        ttk.Button(btn_frame, text="Edit / View", command=edit_selected).pack(side=tk.RIGHT)
-        ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side=tk.RIGHT, padx=5)
-        
-        lb.bind("<Double-1>", lambda e: edit_selected())
-
-    # REASON FOR COMMENTING: Replaced synchronous logic with threaded logic below
-    # def run_audit_scan(self, content):
-    #     self.current_matches = self.audit_manager.find_conformity(content)
-    #     self.txt_preview.config(state=tk.NORMAL)
-    #     self.txt_preview.tag_remove("audit_match", "1.0", tk.END)
-    #     for m in self.current_matches:
-    #         tk_start = f"1.0 + {m['start']} chars"
-    #         tk_end = f"1.0 + {m['end']} chars"
-    #         self.txt_preview.tag_add("audit_match", tk_start, tk_end)
-    #     self.txt_preview.config(state=tk.DISABLED)
+        for t in titles: lb.insert(tk.END, t)
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=5)
 
     def run_audit_scan(self, content):
         target_file = self.current_preview_file 
@@ -1143,144 +885,90 @@ class ExplorerUI(ttk.Frame):
         self.after(0, lambda: self._apply_audit_results(matches, target_file))
 
     def _apply_audit_results(self, matches, target_file):
-        if self.current_preview_file != target_file:
-            return 
-        
+        if self.current_preview_file != target_file: return 
         self.current_matches = matches
         self.txt_preview.config(state=tk.NORMAL)
         self.txt_preview.tag_remove("audit_match", "1.0", tk.END)
-        
         for m in matches:
             tk_start = f"1.0 + {m['start']} chars"
             tk_end = f"1.0 + {m['end']} chars"
             self.txt_preview.tag_add("audit_match", tk_start, tk_end)
-            
         self.txt_preview.config(state=tk.DISABLED)
 
     def _on_text_motion(self, event):
         try:
             index = self.txt_preview.index(f"@{event.x},{event.y}")
             tags = self.txt_preview.tag_names(index)
-            
             if "audit_match" in tags:
                 count_res = self.txt_preview.count("1.0", index, "chars")
                 current_char_idx = count_res[0] if count_res else 0
-                
                 matches_here = []
                 for m in self.current_matches:
-                    if m['start'] <= current_char_idx < m['end']:
-                        matches_here.append(m['title'])
-                
+                    if m['start'] <= current_char_idx < m['end']: matches_here.append(m['title'])
                 matches_here = list(set(matches_here))
-
                 if matches_here:
                     titles = "\n".join(matches_here)
                     x = event.x_root + 15
                     y = event.y_root + 15
                     self.audit_tip.show_tip(x, y, titles)
                     return
-
             self.audit_tip.hide_tip()
-            
-        except Exception:
-            self.audit_tip.hide_tip()
+        except Exception: self.audit_tip.hide_tip()
 
     def _load_favorites(self):
         if os.path.exists(self.fav_file):
             try:
-                with open(self.fav_file, 'r') as f:
-                    self.favorites = json.load(f)
+                with open(self.fav_file, 'r') as f: self.favorites = json.load(f)
             except: self.favorites = {}
         else: self.favorites = {}
         self._update_mem_ui()
-
     def _save_to_favorite(self, idx):
         path = self.tree.focus() or self.current_path
-        if not os.path.isdir(path):
-            path = os.path.dirname(path)
+        if not os.path.isdir(path): path = os.path.dirname(path)
         self.favorites[str(idx)] = path
-        try:
-            with open(self.fav_file, 'w') as f:
-                json.dump(self.favorites, f)
-            self._update_mem_ui()
-            self.mem_buttons[idx].state(['pressed'])
-            self.after(100, lambda: self.mem_buttons[idx].state(['!pressed']))
-        except Exception as e:
-            messagebox.showerror("Error", f"Could not save favorite: {e}")
-
+        with open(self.fav_file, 'w') as f: json.dump(self.favorites, f)
+        self._update_mem_ui()
     def _jump_to_favorite(self, idx):
         path = self.favorites.get(str(idx))
-        if path and os.path.exists(path):
-            self.load_path(path)
-        else:
-            messagebox.showinfo("Memory", "Slot is empty. Right-click to save a folder here.")
-
+        if path and os.path.exists(path): self.load_path(path)
     def _update_mem_ui(self):
         for i in range(4):
             path = self.favorites.get(str(i))
-            if path:
-                folder_name = os.path.basename(path) or path
-                self.mem_buttons[i].config(text=f"[{i+1}] {folder_name[:10]}")
-                self.mem_tips[i].text = path
-            else:
-                self.mem_buttons[i].config(text=f"[{i+1}] Empty")
-                self.mem_tips[i].text = "Empty slot - Right-click to save folder"
-
-    def _update_task_status(self, delta):
-        self.running_threads += delta
-        self.monitor.set_tasks(max(0, self.running_threads))
+            if path: self.mem_buttons[i].config(text=f"[{i+1}] {os.path.basename(path)[:10]}")
+            else: self.mem_buttons[i].config(text=f"[{i+1}] Empty")
 
     def load_path(self, path):
-        self.cancel_event.set(); self.cancel_event = threading.Event()
-        self._update_task_status(1)
-        threading.Thread(target=lambda: self._bg_load(path), daemon=True).start()
-
-    def _bg_load(self, path):
-        items = self.logic.list_directory(path)
-        self.after(0, lambda: self._finish_load(items, path))
-
+        self.monitor.set_tasks(1)
+        threading.Thread(target=lambda: self._finish_load(self.logic.list_directory(path), path), daemon=True).start()
     def _finish_load(self, items, path):
         if items is not None:
             self.current_path = path; self.path_var.set(path); self._populate_tree(items)
-        self._update_task_status(-1)
+        self.monitor.set_tasks(0)
 
     def perform_search(self):
         q = self.search_var.get().strip()
-        if not q:
-            return
-        self.is_searching = True; self.clear_btn.config(state=tk.NORMAL)
-        self.cancel_event.set(); self.cancel_event = threading.Event()
-        self._update_task_status(1)
-        threading.Thread(target=lambda: self._bg_search(q), daemon=True).start()
-
-    def _bg_search(self, q):
-        res = self.logic.search_files(self.current_path, q, cancel_event=self.cancel_event)
-        self.after(0, lambda: self._finish_search(res))
-
+        if not q: return
+        self.clear_btn.config(state=tk.NORMAL)
+        threading.Thread(target=lambda: self._finish_search(self.logic.search_files(self.current_path, q)), daemon=True).start()
     def _finish_search(self, res):
         if res is not None: self._populate_tree(res)
-        self._update_task_status(-1)
-
     def clear_search(self):
-        self.cancel_event.set(); self.is_searching = False; self.search_var.set("")
-        self.clear_btn.config(state=tk.DISABLED); self.load_path(self.current_path)
+        self.search_var.set(""); self.clear_btn.config(state=tk.DISABLED); self.load_path(self.current_path)
 
     def _setup_context_menu(self):
         self.context_menu = tk.Menu(self, tearoff=0)
-        self.context_menu.add_command(label="Reveal in Finder", command=self.reveal_in_finder)
+        self.context_menu.add_command(label="Reveal in Finder/Explorer", command=self.reveal_in_finder)
         self.context_menu.add_command(label="Copy Path", command=self.copy_path_to_clipboard)
         self.context_menu.add_separator()
-        self.context_menu.add_command(label="Open Terminal", command=self.open_terminal_at_selection)
-        self.context_menu.add_command(label="Refresh", command=lambda: self.load_path(self.current_path))
-
+        self.context_menu.add_command(label="Open Terminal Here", command=self.open_terminal_at_selection)
+        self.context_menu.add_command(label="Refresh Folder", command=lambda: self.load_path(self.current_path))
+    
     def reveal_in_finder(self):
         path = self.tree.focus()
         if path: subprocess.run(["open", "-R", path])
-
     def copy_path_to_clipboard(self):
         path = self.tree.focus()
         if path: self.clipboard_clear(); self.clipboard_append(path)
-
     def open_terminal_at_selection(self):
         path = self.tree.focus()
         if path:
@@ -1299,46 +987,44 @@ class ExplorerUI(ttk.Frame):
     def _show_ctx(self, e):
         row = self.tree.identify_row(e.y)
         if row: self.tree.selection_set(row); self.context_menu.post(e.x_root, e.y_root)
-
     def _on_dbclick(self):
         sid = self.tree.focus()
         if sid and os.path.isdir(sid):
             if self.is_searching: self.clear_search()
             self.load_path(sid)
-
+    
     def update_preview(self, path):
         self.preview_offset = 0; self.current_preview_file = path; self.load_more_btn.pack_forget(); self.copy_btn.pack_forget(); self.txt_preview.config(state=tk.NORMAL); self.txt_preview.delete(1.0, tk.END)
         if not path: self.lbl_meta.config(text="No Selection"); self.txt_preview.config(state=tk.DISABLED); return
-        h, c, has_more = self.logic.get_preview_content(path, self.preview_offset); self.lbl_meta.config(text=h); self.txt_preview.insert(tk.END, c)
+        h, c, has_more = self.logic.get_preview_content(path, self.preview_offset)
+        self.lbl_meta.config(text=h); self.txt_preview.insert(tk.END, c)
         
         _, ext = os.path.splitext(path)
-        if os.path.basename(path) in {'Dockerfile', 'Makefile', 'Jenkinsfile'}:
-            ext = 'Dockerfile'
+        if os.path.basename(path) in {'Dockerfile', 'Makefile', 'Jenkinsfile'}: ext = 'Dockerfile'
         self.highlighter.highlight(c, ext)
         self.run_audit_scan(c)
-
-        self.txt_preview.config(state=tk.DISABLED)
         
-        if c and not c.startswith("["): self.copy_btn.pack(side=tk.RIGHT, anchor="ne", padx=5)
+        self.txt_preview.config(state=tk.DISABLED)
+        if c and not c.startswith("["): self.copy_btn.pack(side=tk.RIGHT)
         if has_more: self.load_more_btn.pack(side=tk.BOTTOM, fill=tk.X, pady=2); self.preview_offset += self.logic.CHUNK_SIZE
 
     def load_next_chunk(self):
         if not self.current_preview_file: return
         h, c, has_more = self.logic.get_preview_content(self.current_preview_file, self.preview_offset)
-        self.txt_preview.config(state=tk.NORMAL); self.txt_preview.insert(tk.END, "\n" + "-"*10 + " [Next Chunk] " + "-"*10 + "\n"); self.txt_preview.insert(tk.END, c)
-        
+        self.txt_preview.config(state=tk.NORMAL)
+        self.txt_preview.insert(tk.END, "\n" + "-"*10 + " [Next Chunk] " + "-"*10 + "\n")
+        self.txt_preview.insert(tk.END, c)
         full_content = self.txt_preview.get("1.0", tk.END)
         _, ext = os.path.splitext(self.current_preview_file)
         self.highlighter.highlight(full_content, ext)
         self.run_audit_scan(full_content)
-        
         self.txt_preview.config(state=tk.DISABLED); self.txt_preview.see(tk.END)
         if not has_more: self.load_more_btn.pack_forget()
         else: self.preview_offset += self.logic.CHUNK_SIZE
 
     def copy_preview_to_clipboard(self):
         content = self.txt_preview.get(1.0, tk.END)
-        if content.strip(): self.clipboard_clear(); self.clipboard_append(content); self.copy_btn.config(text="Copied!"); self.after(1500, lambda: self.copy_btn.config(text="Copy"))
+        if content.strip(): self.clipboard_clear(); self.clipboard_append(content)
 
     def _sort_column(self, col):
         children = self.tree.get_children(''); self.sort_reverse = not self.sort_reverse
@@ -1353,8 +1039,7 @@ class ExplorerUI(ttk.Frame):
         if items:
             for itm in items:
                 d_name = f"📁 {itm['name']}" if itm['is_dir'] else f"📄 {itm['name']}"
-                tag = 'folder' if itm['is_dir'] else ''
-                self.tree.insert("", tk.END, iid=itm['path'], text=d_name, values=(itm['size'], itm['modified']), tags=(tag,))
+                self.tree.insert("", tk.END, iid=itm['path'], text=d_name, values=(itm['size'], itm['modified']))
 
     def go_up(self):
         if self.is_searching: self.clear_search()

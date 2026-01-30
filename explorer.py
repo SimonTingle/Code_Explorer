@@ -305,93 +305,95 @@ class ConfigurableGraphGenerator:
 
     # REASON FOR UPDATE: Merged Planetary/Solar System Logic here.
     # Replaced the generic data generation with Star/Planet logic.
+    def _get_dir_size(self, path):
+        """Recursively calculates the total size of a directory in bytes."""
+        total = 0
+        try:
+            with os.scandir(path) as it:
+                for entry in it:
+                    if entry.is_file():
+                        total += entry.stat().st_size
+                    elif entry.is_dir():
+                        total += self._get_dir_size(entry.path)
+        except (PermissionError, OSError):
+            pass
+        return total
+
     def _generate_data(self, root_path, allowed_exts, allowed_folders):
         nodes = []
         links = []
         id_counter = 0
         path_map = {} 
         
-        # SOLAR SYSTEM LOGIC: Ignore system folders for cleaner galaxy
-        ignored_directories = {
-            'node_modules', 'lib', 'libs', 'bin', 'obj', 'include', 'vendor', 
-            'venv', 'env', '.git', '.idea', '.vscode', '__pycache__', 'dist', 'build'
-        }
+        ignored_directories = {'node_modules', 'lib', '.git', 'venv', 'dist', 'build'}
 
         for root, dirs, files in os.walk(root_path):
             dirs[:] = [d for d in dirs if d not in ignored_directories]
-            
             rel_path = os.path.relpath(root, root_path)
             top_level = rel_path.split(os.sep)[0]
             if top_level != "." and top_level not in allowed_folders:
                 dirs[:] = [] 
                 continue
 
+            # --- SUN (FOLDER) SCALING ---
             folder_id = path_map.get(root)
             if folder_id is None:
                 folder_id = id_counter
                 path_map[root] = folder_id
                 id_counter += 1
                 
-                is_root = (root == root_path)
-                star_size = 40 if is_root else 15
-                star_color = "#FFFFE0" if is_root else "#FFFFFF"
+                # REASON: Calculate recursive size to determine "Sun" mass
+                raw_folder_size = self._get_dir_size(root) / 1024 # KB
+                # Scaling logic: Base size + logarithmic growth based on mass
+                # This ensures large folders are bigger, but don't break the camera
+                sun_val = 10 + (max(0, raw_folder_size)**0.25 * 2)
                 
-                # FOLDER = STAR
+                is_root = (root == root_path)
                 nodes.append({
                     "id": folder_id, 
                     "name": os.path.basename(root) if not is_root else "SUN (Root)", 
-                    "val": star_size, 
-                    "color": star_color, 
+                    "val": sun_val * 2 if is_root else sun_val, 
+                    "color": "#FFFFE0" if is_root else "#FFFFFF", 
                     "type": "folder"
                 })
 
             parent_dir = os.path.dirname(root)
             if parent_dir in path_map:
-                links.append({
-                    "source": path_map[parent_dir], 
-                    "target": folder_id, 
-                    "width": 1.5, 
-                    "color": "#666666", 
-                    "type": "gravity"
-                })
+                links.append({"source": path_map[parent_dir], "target": folder_id, "width": 1.5, "color": "#666666", "type": "gravity"})
 
+            # --- PLANET (FILE) SCALING ---
             for f in files:
                 _, ext = os.path.splitext(f)
                 if ext.lower() not in allowed_exts: continue
-                
                 file_path = os.path.join(root, f)
                 file_id = id_counter
                 path_map[file_path] = file_id
                 id_counter += 1
                 
-                color = self._get_color(ext)
-                try: size = os.path.getsize(file_path) / 1024 
-                except: size = 1
-                visual_size = max(2, min(10, size**0.2))
+                try: 
+                    raw_file_size = os.path.getsize(file_path) / 1024 # KB
+                except: 
+                    raw_file_size = 1
+                
+                # REASON: Planet size is now relative to its real disk footprint
+                # Square root scaling prevents massive files from filling the whole screen
+                visual_size = max(2, min(25, raw_file_size**0.3 * 1.5))
 
-                # FILE = PLANET
                 nodes.append({
                     "id": file_id, 
                     "name": f, 
                     "val": visual_size, 
-                    "color": color, 
+                    "color": self._get_color(ext), 
                     "type": "file", 
                     "path": file_path
                 })
-                
-                links.append({
-                    "source": folder_id, 
-                    "target": file_id, 
-                    "width": 0.5, 
-                    "color": "#333333", 
-                    "type": "orbit"
-                })
-        # --- NEW LOGIC LINKS START HERE ---
+                links.append({"source": folder_id, "target": file_id, "width": 0.5, "color": "#333333", "type": "orbit"})
+
+        # Logic links analysis remains the same...
         file_nodes = [n for n in nodes if n["type"] == "file"]
-        # REASON: Run the code assessment to find inter-planetary logic threads
         logic_links = self._analyze_relationships(nodes, file_nodes)
         links.extend(logic_links)
-        # ----------------------------------
+
         return {"nodes": nodes, "links": links}
 
     # REASON FOR UPDATE: Old _generate_data (Generic) logic commented out to preserve history

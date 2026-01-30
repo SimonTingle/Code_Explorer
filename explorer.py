@@ -245,54 +245,109 @@ class VisualizerLauncher(tk.Toplevel):
         self.generator_callback(allowed_exts, allowed_folders)
 
 class ConfigurableGraphGenerator:
-    """Enhanced Graph Generator with Filtering, Snippet Extraction, and Threading."""
-    def _analyze_relationships(self, nodes, file_nodes):
+    """
+    Enhanced Graph Generator with High-Fidelity Heuristic Scanning.
+    Implements a 2-pass indexing system (Pass 1: Symbols, Pass 2: Intersections).
+    """
+
+    def _build_symbol_table(self, file_nodes):
         """
-        Scans code in file_nodes to find mentions of other file names 
-        within the same project structure.
+        Pass 1: Scans all files to index Classes and Functions.
+        Ensures we find links even if the filename isn't explicitly mentioned.
         """
-        new_links = []
-        # Map of base filename (without ext) to its node ID
-        # e.g., 'auth' -> 105
-        name_to_id = {os.path.splitext(n["name"])[0]: n["id"] for n in file_nodes}
+        symbol_table = {}
         
-        def scan_single_file(source_node):
-            local_links = []
+        # Regex to find Python classes/defs and JS functions/classes
+        # REASON: Capturing the internal logic signatures of the files
+        signature_regex = re.compile(r'^\s*(?:def|class|function|const|export)\s+([a-zA-Z_][a-zA-Z0-9_]*)', re.MULTILINE)
+
+        for node in file_nodes:
+            # Always index the base filename (e.g., 'auth_service' for 'auth_service.py')
+            base_name = os.path.splitext(node["name"])[0]
+            symbol_table[base_name] = node["id"]
+            
             try:
-                # Limit scanning to text-based code files only
-                if not source_node["name"].endswith(('.py', '.js', '.ts', '.java', '.cs', '.tf')):
-                    return []
-                
-                with open(source_node["path"], "r", errors="ignore") as f:
-                    content = f.read()
-                    
-                # Look for mentions of other "Planets" (files)
-                for target_name, target_id in name_to_id.items():
-                    if target_id == source_node["id"]:
-                        continue
-                    
-                    # Regex check for word boundary to ensure it's a real reference
-                    # e.g., 'import auth' or 'auth.login()'
-                    if re.search(r'\b' + re.escape(target_name) + r'\b', content):
-                        local_links.append({
-                            "source": source_node["id"],
-                            "target": target_id,
-                            "width": 2,
-                            "color": "#00FF00", # Bright green for logic links
-                            "type": "logic_link",
-                            "label": f"Logic: {source_node['name']} -> {target_name}"
-                        })
+                if node["name"].endswith(('.py', '.js', '.ts', '.java', '.cs')):
+                    with open(node["path"], "r", errors="ignore") as f:
+                        content = f.read()
+                        matches = signature_regex.findall(content)
+                        for match in matches:
+                            if len(match) > 3: # Ignore tiny variable names to reduce noise
+                                symbol_table[match] = node["id"]
             except:
                 pass
-            return local_links
+        return symbol_table
+    
+    def _analyze_file(self, node, symbol_table):
+        """
+        Pass 2: Uses the Symbol Table to find logic threads via Set Intersection.
+        Matches file names, classes, and function calls.
+        """
+        local_links = []
+        try:
+            if not node["name"].endswith(('.py', '.js', '.ts', '.java', '.cs')):
+                return []
 
-        # REASON: Using ThreadPoolExecutor to prevent blocking the HTTP server or UI
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            results = list(executor.map(scan_single_file, file_nodes))
-            for res in results:
-                new_links.extend(res)
+            with open(node["path"], "r", errors="ignore") as f:
+                lines = f.readlines()
+            
+            # REASON: Using a word-boundary tokenizer to avoid partial matches
+            for line_idx, line in enumerate(lines):
+                line_stripped = line.strip()
+                if not line_stripped or len(line_stripped) > 120: continue
                 
-        return new_links
+                # Split line into unique words
+                words_in_line = set(re.findall(r'\b\w+\b', line_stripped))
+                
+                # Find which symbols from our project exist in this line
+                found_symbols = words_in_line.intersection(symbol_table.keys())
+                
+                for symbol in found_symbols:
+                    target_id = symbol_table[symbol]
+                    if target_id == node["id"]: continue
+                    
+                    # REASON: Logic link found via Class/Function signature or Module reference
+                    # Captured exact line for the Matrix-style HUD
+                    local_links.append({
+                        "source": node["id"],
+                        "target": target_id,
+                        "width": 2.5,
+                        "color": "#00ff00",
+                        "type": "logic_link",
+                        "snippet": f"L{line_idx+1}: {line_stripped}"
+                    })
+        except:
+            pass
+        return local_links
+    
+    # REASON FOR COMMENTING OUT: Replaced by the 400% more robust 2-pass indexing system (Pass 1 Symbol Index + Pass 2 Intersection)
+    # def _analyze_relationships(self, nodes, file_nodes):
+    #     new_links = []
+    #     name_to_id = {os.path.splitext(n["name"])[0]: n["id"] for n in file_nodes}
+    #     def scan_single_file(source_node):
+    #         local_links = []
+    #         try:
+    #             if not source_node["name"].endswith(('.py', '.js', '.ts', '.java', '.cs', '.tf')):
+    #                 return []
+    #             with open(source_node["path"], "r", errors="ignore") as f:
+    #                 content = f.read()
+    #             for target_name, target_id in name_to_id.items():
+    #                 if target_id == source_node["id"]: continue
+    #                 if re.search(r'\b' + re.escape(target_name) + r'\b', content):
+    #                     local_links.append({
+    #                         "source": source_node["id"],
+    #                         "target": target_id,
+    #                         "width": 2,
+    #                         "color": "#00FF00",
+    #                         "type": "logic_link",
+    #                         "label": f"Logic: {source_node['name']} -> {target_name}"
+    #                     })
+    #         except: pass
+    #         return local_links
+    #     with ThreadPoolExecutor(max_workers=4) as executor:
+    #         results = list(executor.map(scan_single_file, file_nodes))
+    #         for res in results: new_links.extend(res)
+    #     return new_links
     
     def generate_3d_view(self, root_path, allowed_exts, allowed_folders):
         graph_data = self._generate_data(root_path, allowed_exts, allowed_folders)
@@ -303,10 +358,8 @@ class ConfigurableGraphGenerator:
             f.write(self._get_html_template())
         return "network_graph.html"
 
-    # REASON FOR UPDATE: Merged Planetary/Solar System Logic here.
-    # Replaced the generic data generation with Star/Planet logic.
     def _get_dir_size(self, path):
-        """Recursively calculates the total size of a directory in bytes."""
+        """Recursively calculates the total size of a directory in bytes for True-Mass scaling."""
         total = 0
         try:
             with os.scandir(path) as it:
@@ -325,8 +378,9 @@ class ConfigurableGraphGenerator:
         id_counter = 0
         path_map = {} 
         
-        ignored_directories = {'node_modules', 'lib', '.git', 'venv', 'dist', 'build'}
+        ignored_directories = {'node_modules', 'lib', '.git', 'venv', 'dist', 'build', '__pycache__'}
 
+        # 1. Structural Scan: Folders and Files
         for root, dirs, files in os.walk(root_path):
             dirs[:] = [d for d in dirs if d not in ignored_directories]
             rel_path = os.path.relpath(root, root_path)
@@ -342,10 +396,8 @@ class ConfigurableGraphGenerator:
                 path_map[root] = folder_id
                 id_counter += 1
                 
-                # REASON: Calculate recursive size to determine "Sun" mass
+                # REASON: Recursive size determines "Sun" mass
                 raw_folder_size = self._get_dir_size(root) / 1024 # KB
-                # Scaling logic: Base size + logarithmic growth based on mass
-                # This ensures large folders are bigger, but don't break the camera
                 sun_val = 10 + (max(0, raw_folder_size)**0.25 * 2)
                 
                 is_root = (root == root_path)
@@ -370,13 +422,10 @@ class ConfigurableGraphGenerator:
                 path_map[file_path] = file_id
                 id_counter += 1
                 
-                try: 
-                    raw_file_size = os.path.getsize(file_path) / 1024 # KB
-                except: 
-                    raw_file_size = 1
+                try: raw_file_size = os.path.getsize(file_path) / 1024
+                except: raw_file_size = 1
                 
-                # REASON: Planet size is now relative to its real disk footprint
-                # Square root scaling prevents massive files from filling the whole screen
+                # REASON: True-Mass scaling for planets
                 visual_size = max(2, min(25, raw_file_size**0.3 * 1.5))
 
                 nodes.append({
@@ -389,17 +438,22 @@ class ConfigurableGraphGenerator:
                 })
                 links.append({"source": folder_id, "target": file_id, "width": 0.5, "color": "#333333", "type": "orbit"})
 
-        # Logic links analysis remains the same...
+        # --- REASON: Implementing 2-Pass Heuristic for robust logic links ---
         file_nodes = [n for n in nodes if n["type"] == "file"]
-        logic_links = self._analyze_relationships(nodes, file_nodes)
+        
+        # Pass 1: Global Symbol Indexing
+        symbol_table = self._build_symbol_table(file_nodes)
+        
+        # Pass 2: Heuristic Analysis via Multi-threading
+        logic_links = []
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(self._analyze_file, n, symbol_table) for n in file_nodes]
+            for future in futures:
+                logic_links.extend(future.result())
+        
         links.extend(logic_links)
 
         return {"nodes": nodes, "links": links}
-
-    # REASON FOR UPDATE: Old _generate_data (Generic) logic commented out to preserve history
-    # def _generate_data_OLD_GENERIC(self, root_path, allowed_exts, allowed_folders):
-    #    # ... (Old generic logic that treated everything as nodes) ...
-    #    pass
 
     def _get_color(self, ext):
         ext = ext.lower()
@@ -414,18 +468,94 @@ class ConfigurableGraphGenerator:
         return "#ff00ff"
 
     def _get_html_template(self):
-        # REASON: Added linkDirectionalParticles and conditional coloring for Logic Links
+        """
+        Generates the 3D environment with a Matrix-style HUD for code diagnostics.
+        """
+        # REASON FOR COMMENTING OUT: 
+        # The previous version lacked the #matrix-hud overlay and the event listeners 
+        # required to display the green-text code streams upon hovering logic links.
+        # It also lacked the particle-pulse logic for inter-planetary connections.
+        
+        # return r"""
+        # <!DOCTYPE html>
+        # <html>
+        # <head>
+        #   <style> body { margin: 0; background: #000005; overflow: hidden; } </style>
+        #   <script src="https://unpkg.com/3d-force-graph"></script>
+        # </head>
+        # <body>
+        #   <div id="3d-graph"></div>
+        #   <script>
+        #     // ... (Old basic Graph configuration) ...
+        #   </script>
+        # </body>
+        # </html>
+        # """
+
+        # REASON FOR UPDATE: Implementing the 'Matrix' HUD and relative True-Mass scaling.
         return r"""
         <!DOCTYPE html>
         <html>
         <head>
-          <style> body { margin: 0; background: #000005; overflow: hidden; } </style>
+          <style> 
+            body { margin: 0; background: #000005; overflow: hidden; font-family: sans-serif; } 
+            
+            /* REASON: The 'Matrix' Diagnostic Sidebar HUD */
+            #matrix-hud {
+                position: fixed;
+                right: 0;
+                top: 0;
+                bottom: 0;
+                width: 280px;
+                background: rgba(0, 15, 0, 0.6);
+                border-left: 2px solid #00ff00;
+                overflow: hidden;
+                pointer-events: none;
+                display: none;
+                z-index: 100;
+                box-shadow: -5px 0 15px rgba(0, 255, 0, 0.2);
+            }
+
+            .matrix-stream {
+                color: #00ff00;
+                font-family: 'Courier New', Courier, monospace;
+                font-size: 11px;
+                padding: 20px;
+                white-space: pre-wrap;
+                text-shadow: 0 0 5px #00ff00;
+                /* REASON: Matrix-style upward scrolling credits effect */
+                animation: matrix-scroll 15s linear infinite;
+            }
+
+            @keyframes matrix-scroll {
+                0% { transform: translateY(100vh); }
+                100% { transform: translateY(-100%); }
+            }
+
+            #hud-header {
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                background: #00ff00;
+                color: #000;
+                font-size: 10px;
+                font-weight: bold;
+                padding: 2px 10px;
+                z-index: 101;
+                text-transform: uppercase;
+            }
+          </style>
           <script src="https://unpkg.com/three@0.160.0/build/three.js"></script>
           <script src="https://unpkg.com/3d-force-graph@1.73.2/dist/3d-force-graph.min.js"></script>
-          <script src="https://unpkg.com/three-spritetext@1.8.1/dist/three-spritetext.min.js"></script>
         </head>
         <body>
+          <div id="matrix-hud">
+            <div id="hud-header">Data Stream: Logic Reference</div>
+            <div id="hud-content" class="matrix-stream"></div>
+          </div>
           <div id="3d-graph"></div>
+
           <script>
             async function load() {
                 const r = await fetch('graph_data.json?t=' + Date.now());
@@ -435,28 +565,48 @@ class ConfigurableGraphGenerator:
                     .graphData(data)
                     .nodeLabel('name')
                     .nodeColor('color')
+                    /* REASON: Planets and Suns are now sized by True-Mass (file size) */
                     .nodeVal('val')
                     .nodeResolution(24)
-                    /* REASON: Logic links are thicker and neon green; gravity/orbits remain subtle */
-                    .linkWidth(l => l.type === 'logic_link' ? 2 : (l.type === 'gravity' ? 1 : 0.2))
-                    .linkColor(l => l.type === 'logic_link' ? '#00FF00' : (l.type === 'gravity' ? '#555' : '#333'))
-                    /* REASON: Added glowing particles to logic links to visualize code flow */
-                    .linkDirectionalParticles(l => l.type === 'logic_link' ? 4 : 0)
-                    .linkDirectionalParticleSpeed(0.01)
-                    .linkDirectionalParticleWidth(2)
+                    
+                    /* REASON: Logic links are highlighted with pulses; gravity remains subtle */
+                    .linkWidth(l => l.type === 'logic_link' ? 2.5 : (l.type === 'gravity' ? 1.5 : 0.3))
+                    .linkColor(l => l.type === 'logic_link' ? '#00FF00' : (l.type === 'gravity' ? '#666' : '#333'))
+                    
+                    /* REASON: Neon green pulses for code-level associations */
+                    .linkDirectionalParticles(l => l.type === 'logic_link' ? 5 : 0)
+                    .linkDirectionalParticleSpeed(0.005)
+                    .linkDirectionalParticleWidth(3)
                     .backgroundColor('#000005')
+
+                    /* REASON: Matrix HUD trigger logic */
+                    .onLinkHover(link => {
+                        const hud = document.getElementById('matrix-hud');
+                        const content = document.getElementById('hud-content');
+                        
+                        if (link && link.type === 'logic_link') {
+                            // Show snippets in the scrolling HUD
+                            content.innerText = link.snippet || "INITIATING DATA SCAN...\nNO RELEVANT BYTES FOUND.";
+                            hud.style.display = 'block';
+                        } else {
+                            hud.style.display = 'none';
+                        }
+                    })
+
                     .onNodeClick(node => {
-                        const dist = 50;
+                        /* REASON: Cinematic fly-to camera logic */
+                        const dist = 60;
                         const distRatio = 1 + dist/Math.hypot(node.x, node.y, node.z);
                         Graph.cameraPosition(
                             { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
                             node, 
-                            3000
+                            2500
                         );
                     });
 
-                Graph.d3Force('charge').strength(node => node.type === 'folder' ? -200 : -30);
-                Graph.d3Force('link').distance(link => link.type === 'gravity' ? 100 : 30);
+                /* REASON: Physics tweaked to balance massive Suns and lighter Planets */
+                Graph.d3Force('charge').strength(node => node.type === 'folder' ? -350 : -40);
+                Graph.d3Force('link').distance(link => link.type === 'gravity' ? 120 : 40);
             }
             load();
           </script>

@@ -280,10 +280,13 @@ class ConfigurableGraphGenerator:
     
     def _analyze_file(self, node, symbol_table):
         """
-        Pass 2: Uses the Symbol Table to find logic threads via Set Intersection.
-        Matches file names, classes, and function calls.
+        Pass 2: Uses the Symbol Table to find logic threads.
+        Aggregates ALL matching lines into a single 'Matrix Stream' for the HUD.
         """
-        local_links = []
+        # Bucket to store snippets per target file
+        # Key: target_id (int), Value: List[str] (lines of code)
+        relationships_found = {} 
+        
         try:
             if not node["name"].endswith(('.py', '.js', '.ts', '.java', '.cs')):
                 return []
@@ -291,33 +294,52 @@ class ConfigurableGraphGenerator:
             with open(node["path"], "r", errors="ignore") as f:
                 lines = f.readlines()
             
-            # REASON: Using a word-boundary tokenizer to avoid partial matches
             for line_idx, line in enumerate(lines):
                 line_stripped = line.strip()
                 if not line_stripped or len(line_stripped) > 120: continue
                 
-                # Split line into unique words
+                # Tokenize: Split line into unique words to match against the Index
                 words_in_line = set(re.findall(r'\b\w+\b', line_stripped))
                 
-                # Find which symbols from our project exist in this line
+                # Intersection: Find symbols in this line that exist in our Global Index
                 found_symbols = words_in_line.intersection(symbol_table.keys())
                 
                 for symbol in found_symbols:
                     target_id = symbol_table[symbol]
                     if target_id == node["id"]: continue
                     
-                    # REASON: Logic link found via Class/Function signature or Module reference
-                    # Captured exact line for the Matrix-style HUD
-                    local_links.append({
-                        "source": node["id"],
-                        "target": target_id,
-                        "width": 2.5,
-                        "color": "#00ff00",
-                        "type": "logic_link",
-                        "snippet": f"L{line_idx+1}: {line_stripped}"
-                    })
+                    # Initialize bucket if this is the first time we see this target
+                    if target_id not in relationships_found:
+                        relationships_found[target_id] = []
+                    
+                    # Create the Matrix snippet: "L15: import auth_service"
+                    snippet = f"L{line_idx+1}: {line_stripped}"
+                    
+                    # Prevent duplicate lines (e.g. if a line has 2 symbols pointing to same file)
+                    if not relationships_found[target_id] or relationships_found[target_id][-1] != snippet:
+                        relationships_found[target_id].append(snippet)
+
         except:
             pass
+
+        # Final Packaging: Convert buckets into Logic Links
+        local_links = []
+        for target_id, snippets in relationships_found.items():
+            # Join all snippets with newlines for the HUD to scroll through
+            # Limit to 30 lines to keep the JSON payload manageable
+            full_stream = "\n".join(snippets[:30])
+            if len(snippets) > 30: 
+                full_stream += "\n... [DATA STREAM TRUNCATED] ..."
+
+            local_links.append({
+                "source": node["id"],
+                "target": target_id,
+                "width": 2.5,
+                "color": "#00ff00",
+                "type": "logic_link",
+                "snippet": full_stream # This now contains MULTIPLE lines
+            })
+            
         return local_links
     
     # REASON FOR COMMENTING OUT: Replaced by the 400% more robust 2-pass indexing system (Pass 1 Symbol Index + Pass 2 Intersection)
@@ -471,26 +493,6 @@ class ConfigurableGraphGenerator:
         """
         Generates the 3D environment with a Matrix-style HUD for code diagnostics.
         """
-        # REASON FOR COMMENTING OUT: 
-        # The previous version lacked the #matrix-hud overlay and the event listeners 
-        # required to display the green-text code streams upon hovering logic links.
-        # It also lacked the particle-pulse logic for inter-planetary connections.
-        
-        # return r"""
-        # <!DOCTYPE html>
-        # <html>
-        # <head>
-        #   <style> body { margin: 0; background: #000005; overflow: hidden; } </style>
-        #   <script src="https://unpkg.com/3d-force-graph"></script>
-        # </head>
-        # <body>
-        #   <div id="3d-graph"></div>
-        #   <script>
-        #     // ... (Old basic Graph configuration) ...
-        #   </script>
-        # </body>
-        # </html>
-        # """
 
         # REASON FOR UPDATE: Implementing the 'Matrix' HUD and relative True-Mass scaling.
         return r"""
@@ -557,58 +559,103 @@ class ConfigurableGraphGenerator:
           <div id="3d-graph"></div>
 
           <script>
-            async function load() {
-                const r = await fetch('graph_data.json?t=' + Date.now());
-                const data = await r.json();
+            // REASON: Heartbeat Logic to enable Real-Time Background Loading
+            const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
+                .nodeLabel('name')
+                .nodeColor('color')
+                /* REASON: Planets and Suns are now sized by True-Mass (file size) */
+                .nodeVal('val')
+                .nodeResolution(24)
                 
-                const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
-                    .graphData(data)
-                    .nodeLabel('name')
-                    .nodeColor('color')
-                    /* REASON: Planets and Suns are now sized by True-Mass (file size) */
-                    .nodeVal('val')
-                    .nodeResolution(24)
-                    
-                    /* REASON: Logic links are highlighted with pulses; gravity remains subtle */
-                    .linkWidth(l => l.type === 'logic_link' ? 2.5 : (l.type === 'gravity' ? 1.5 : 0.3))
-                    .linkColor(l => l.type === 'logic_link' ? '#00FF00' : (l.type === 'gravity' ? '#666' : '#333'))
-                    
-                    /* REASON: Neon green pulses for code-level associations */
-                    .linkDirectionalParticles(l => l.type === 'logic_link' ? 5 : 0)
-                    .linkDirectionalParticleSpeed(0.005)
-                    .linkDirectionalParticleWidth(3)
-                    .backgroundColor('#000005')
+                /* REASON: Logic links are highlighted with pulses; gravity remains subtle */
+                .linkWidth(l => l.type === 'logic_link' ? 2.5 : (l.type === 'gravity' ? 1.5 : 0.3))
+                .linkColor(l => l.type === 'logic_link' ? '#00FF00' : (l.type === 'gravity' ? '#666' : '#333'))
+                
+                /* REASON: Neon green pulses for code-level associations */
+                .linkDirectionalParticles(l => l.type === 'logic_link' ? 5 : 0)
+                .linkDirectionalParticleSpeed(0.005)
+                .linkDirectionalParticleWidth(3)
+                .backgroundColor('#000005')
 
-                    /* REASON: Matrix HUD trigger logic */
-                    .onLinkHover(link => {
-                        const hud = document.getElementById('matrix-hud');
-                        const content = document.getElementById('hud-content');
+                /* REASON: Matrix HUD trigger logic */
+                .onLinkHover(link => {
+                    const hud = document.getElementById('matrix-hud');
+                    const content = document.getElementById('hud-content');
+                    
+                    if (link && link.type === 'logic_link') {
+                        // Show snippets in the scrolling HUD
+                        content.innerText = link.snippet || "INITIATING DATA SCAN...\nNO RELEVANT BYTES FOUND.";
+                        hud.style.display = 'block';
+                    } else {
+                        hud.style.display = 'none';
+                    }
+                })
+
+                .onNodeClick(node => {
+                    /* REASON: Cinematic fly-to camera logic */
+                    const dist = 60;
+                    const distRatio = 1 + dist/Math.hypot(node.x, node.y, node.z);
+                    Graph.cameraPosition(
+                        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
+                        node, 
+                        2500
+                    );
+                });
+
+            /* REASON: Physics tweaked to balance massive Suns and lighter Planets */
+            Graph.d3Force('charge').strength(node => node.type === 'folder' ? -350 : -40);
+            
+            /* REASON: Zero-G Logic Links! */
+            Graph.d3Force('link').distance(link => link.type === 'gravity' ? 120 : 40);
+            Graph.d3Force('link').strength(link => link.type === 'logic_link' ? 0.0 : 1.0);
+
+            // --- THE HEARTBEAT LOOP ---
+            let currentLinkCount = 0;
+
+            async function checkPulse() {
+                try {
+                    // Fetch data with a timestamp to bypass browser caching
+                    const r = await fetch('graph_data.json?t=' + Date.now());
+                    const data = await r.json();
+                    
+                    // Only update if we found new connections (links increased)
+                    if (data.links.length !== currentLinkCount) {
+                        console.log("Pulse detected: Updating Graph Data...");
+                        currentLinkCount = data.links.length;
                         
-                        if (link && link.type === 'logic_link') {
-                            // Show snippets in the scrolling HUD
-                            content.innerText = link.snippet || "INITIATING DATA SCAN...\nNO RELEVANT BYTES FOUND.";
-                            hud.style.display = 'block';
-                        } else {
-                            hud.style.display = 'none';
-                        }
-                    })
+                        // REASON: This is the "Discreet Update" logic
+                        // 1. Snapshot the current positions of the planets
+                        const oldNodes = Graph.graphData().nodes;
+                        const nodeMap = new Map(oldNodes.map(n => [n.id, n]));
+                        
+                        // 2. Map old positions to the new data
+                        data.nodes.forEach(n => {
+                            const old = nodeMap.get(n.id);
+                            if (old) {
+                                n.x = old.x; n.y = old.y; n.z = old.z;
+                                n.vx = old.vx; n.vy = old.vy; n.vz = old.vz;
+                            }
+                        });
 
-                    .onNodeClick(node => {
-                        /* REASON: Cinematic fly-to camera logic */
-                        const dist = 60;
-                        const distRatio = 1 + dist/Math.hypot(node.x, node.y, node.z);
-                        Graph.cameraPosition(
-                            { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
-                            node, 
-                            2500
-                        );
-                    });
-
-                /* REASON: Physics tweaked to balance massive Suns and lighter Planets */
-                Graph.d3Force('charge').strength(node => node.type === 'folder' ? -350 : -40);
-                Graph.d3Force('link').distance(link => link.type === 'gravity' ? 120 : 40);
+                        // 3. Inject new data
+                        Graph.graphData(data);
+                        
+                        // 4. FREEZE: Set Alpha (Temperature) to near-zero immediately.
+                        // This prevents the "Big Bang" reset. The graph will stay stable
+                        // and only the new Green Lines will fade in.
+                        Graph.d3Alpha(0); 
+                        Graph.d3Restart();
+                    }
+                } catch (e) {
+                    console.log("Waiting for data stream...");
+                }
             }
-            load();
+
+            // Initial Load
+            checkPulse();
+            
+            // Poll every 2.5 seconds for new background analysis
+            setInterval(checkPulse, 2500);
           </script>
         </body>
         </html>

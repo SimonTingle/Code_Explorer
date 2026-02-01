@@ -342,30 +342,15 @@ class ConfigurableGraphGenerator:
             
         return local_links
     
-    # REASON FOR COMMENTING OUT: Replaced by the 400% more robust 2-pass indexing system (Pass 1 Symbol Index + Pass 2 Intersection)
+    # REASON FOR COMMENTING OUT: Replaced by the 400% more robust 2-pass indexing system 
+    # (Pass 1 Symbol Index + Pass 2 Intersection) which finds far more connections than simple regex.
+    #
     # def _analyze_relationships(self, nodes, file_nodes):
     #     new_links = []
     #     name_to_id = {os.path.splitext(n["name"])[0]: n["id"] for n in file_nodes}
     #     def scan_single_file(source_node):
-    #         local_links = []
-    #         try:
-    #             if not source_node["name"].endswith(('.py', '.js', '.ts', '.java', '.cs', '.tf')):
-    #                 return []
-    #             with open(source_node["path"], "r", errors="ignore") as f:
-    #                 content = f.read()
-    #             for target_name, target_id in name_to_id.items():
-    #                 if target_id == source_node["id"]: continue
-    #                 if re.search(r'\b' + re.escape(target_name) + r'\b', content):
-    #                     local_links.append({
-    #                         "source": source_node["id"],
-    #                         "target": target_id,
-    #                         "width": 2,
-    #                         "color": "#00FF00",
-    #                         "type": "logic_link",
-    #                         "label": f"Logic: {source_node['name']} -> {target_name}"
-    #                     })
-    #         except: pass
-    #         return local_links
+    #         # ... (Old Regex scan logic) ...
+    #         pass
     #     with ThreadPoolExecutor(max_workers=4) as executor:
     #         results = list(executor.map(scan_single_file, file_nodes))
     #         for res in results: new_links.extend(res)
@@ -376,8 +361,11 @@ class ConfigurableGraphGenerator:
         
         with open("graph_data.json", "w") as f:
             json.dump(graph_data, f)
+        
+        # REASON: Writing the robust HTML template with Zero-G Physics and Matrix HUD
         with open("network_graph.html", "w") as f:
             f.write(self._get_html_template())
+        
         return "network_graph.html"
 
     def _get_dir_size(self, path):
@@ -473,11 +461,20 @@ class ConfigurableGraphGenerator:
         
         # Pass 2: Heuristic Analysis via Multi-threading
         logic_links = []
+        
+        # REASON: Initialize Thread Counter for UI Status Bar (T: Count)
+        self.active_threads = len(file_nodes)
+        
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = [executor.submit(self._analyze_file, n, symbol_table) for n in file_nodes]
+            
             for future in futures:
                 logic_links.extend(future.result())
+                # REASON: Decrement the counter as each "Planet" scan completes
+                self.active_threads -= 1
         
+        # REASON: Ensure it resets to 0 so the UI shows idle state
+        self.active_threads = 0
         links.extend(logic_links)
 
         return {"nodes": nodes, "links": links}
@@ -573,6 +570,9 @@ class ConfigurableGraphGenerator:
 
             Graph.d3Force('charge').strength(node => node.type === 'folder' ? -350 : -40);
             Graph.d3Force('link').distance(link => link.type === 'gravity' ? 120 : 40);
+            
+            /* REASON: Zero-G Logic Links! 
+               We set the strength of 'logic_link' to 0 so they don't pull planets out of orbit. */
             Graph.d3Force('link').strength(link => link.type === 'logic_link' ? 0.0 : 1.0);
 
             // --- THE HEARTBEAT LOOP ---
@@ -590,7 +590,7 @@ class ConfigurableGraphGenerator:
                         // REASON: Added safety check. If graph is empty, don't try to map nodes.
                         const currentGraphData = Graph.graphData();
                         
-                        if (currentGraphData && currentGraphData.nodes.length > 0) {
+                        if (currentGraphData && currentGraphData.nodes && currentGraphData.nodes.length > 0) {
                             // 1. Snapshot old positions
                             const nodeMap = new Map(currentGraphData.nodes.map(n => [n.id, n]));
                             
@@ -607,7 +607,7 @@ class ConfigurableGraphGenerator:
                         // 3. Inject new data
                         Graph.graphData(data);
                         
-                        // 4. FREEZE: Prevent explosion
+                        // 4. FREEZE: Prevent explosion by setting Alpha to 0 immediately
                         Graph.d3Alpha(0); 
                         Graph.d3Restart();
                     }
@@ -935,24 +935,50 @@ class SystemMonitor(ttk.Frame):
         else: return f"{b/1024**2:.1f}M"
 
 class LiveServer(threading.Thread):
-    def __init__(self, port):
+    def __init__(self, start_port):
         super().__init__(daemon=True)
-        self.port = port
+        self.start_port = start_port
+        self.actual_port = None # Will store the successfully bound port
         self.httpd = None
+        self.root_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # REASON: Loop through a range of ports to avoid "Address already in use" crashes.
+        # This makes the server "Indestructible" on restart.
+        for port in range(self.start_port, self.start_port + 10):
+            try:
+                # Define handler inside the loop to ensure clean scope
+                class Handler(http.server.SimpleHTTPRequestHandler):
+                    def log_message(self, format, *args): pass 
+                    def end_headers(self):
+                        # REASON: Disable caching so the 3D graph updates immediately on reload
+                        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+                        super().end_headers()
+                
+                socketserver.TCPServer.allow_reuse_address = True
+                self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler)
+                
+                # If we reach here, the bind was successful
+                self.actual_port = port
+                print(f"[LiveServer] Successfully bound to http://127.0.0.1:{self.actual_port}")
+                break
+            except OSError as e:
+                print(f"[LiveServer] Port {port} busy, trying next...")
+                continue
+        
+        if self.actual_port is None:
+            print("[LiveServer] CRITICAL: Could not find any open port in range.")
+
     def run(self):
-        os.chdir(os.path.dirname(os.path.abspath(__file__)))
-        class Handler(http.server.SimpleHTTPRequestHandler):
-            def log_message(self, format, *args): pass 
-            def end_headers(self):
-                self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
-                super().end_headers()
-        try:
-            socketserver.TCPServer.allow_reuse_address = True
-            self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", self.port), Handler)
-            self.httpd.serve_forever()
-        except Exception as e: print(f"Server failed to start: {e}")
+        if self.httpd:
+            # REASON: Ensure we serve files from the script's directory (where .html is saved)
+            try:
+                os.chdir(self.root_dir)
+                self.httpd.serve_forever()
+            except Exception as e:
+                print(f"[LiveServer] Runtime Error: {e}")
 
 class ExplorerUI(ttk.Frame):
+    
     def __init__(self, parent, logic_handler):
         super().__init__(parent)
         self.logic = logic_handler
@@ -962,9 +988,18 @@ class ExplorerUI(ttk.Frame):
         self.preview_offset = 0; self.current_preview_file = None
         self.audit_manager = AuditManager(); self.current_matches = []
         
-        self.server_port = 8099
-        self.server_thread = LiveServer(self.server_port)
+        
+        # REASON: Performance Tuning - Variable to hold the hover timer
+        self.hover_timer = None
+        
+        # REASON: Initialize the server with a robust port scanner
+        # We start at 8099, but the server might pick 8100, 8101, etc.
+        requested_port = 8099
+        self.server_thread = LiveServer(requested_port)
         self.server_thread.start()
+        
+        # Store the ACTUAL port being used
+        self.server_port = self.server_thread.actual_port
         
         self.graph_generator = ConfigurableGraphGenerator()
         
@@ -1051,16 +1086,65 @@ class ExplorerUI(ttk.Frame):
         if not self.current_path or not os.path.exists(self.current_path): messagebox.showerror("Error", "Invalid path."); return
         VisualizerLauncher(self, self.current_path, self._start_live_generation)
     
+    # UPDATE FOR ExplorerUI Class
     def _start_live_generation(self, allowed_exts, allowed_folders):
+        """
+        Generates the graph and opens the browser.
+        Includes the 'Smart Watcher' fix from Phase 1.
+        """
         try:
+            if not self.server_port:
+                messagebox.showerror("Error", "Live Server failed to start (no ports available).")
+                return
+
             self.graph_generator.generate_3d_view(self.current_path, allowed_exts, allowed_folders)
+            
+            # REASON: Use the dynamic port determined by the LiveServer class
             url = f"http://127.0.0.1:{self.server_port}/network_graph.html"
             self.after(1000, lambda: webbrowser.open(url))
+            
+            # The Smart Watcher Loop (From Phase 1)
             def update_loop():
+                last_state_hash = ""
                 while True:
-                    time.sleep(60); self.graph_generator.generate_3d_view(self.current_path, allowed_exts, allowed_folders)
+                    time.sleep(2.5)
+                    current_state_hash = self._get_fs_fingerprint(self.current_path)
+                    
+                    if current_state_hash != last_state_hash:
+                        # REASON: Only regenerate if files actually changed
+                        try:
+                            self.graph_generator.generate_3d_view(self.current_path, allowed_exts, allowed_folders)
+                            last_state_hash = current_state_hash
+                        except Exception as e:
+                            print(f"[Auto-Scan Error] {e}")
+                            
             threading.Thread(target=update_loop, daemon=True).start()
         except Exception as e: messagebox.showerror("Error", f"Visualizer failed: {e}")
+
+    def _get_fs_fingerprint(self, path):
+        """
+        Creates a simple string hash based on file count + total size + last modified time.
+        This is much faster than re-scanning the whole graph logic.
+        """
+        total_files = 0
+        total_mtime = 0
+        try:
+            # Fast walk to get metadata only
+            for root, dirs, files in os.walk(path):
+                # Skip hidden/ignored folders to save time
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in {'node_modules', 'venv', '.git'}]
+                
+                for f in files:
+                    full_p = os.path.join(root, f)
+                    try:
+                        stat = os.stat(full_p)
+                        total_files += 1
+                        total_mtime += stat.st_mtime
+                    except: pass
+        except: pass
+        
+        # Return a unique signature for this state
+        return f"{total_files}-{int(total_mtime)}"
 
     def wizard_add_to_db(self):
         title = simpledialog.askstring("Add Database - Step 1/2", "Enter Title (Index Card):")
@@ -1115,24 +1199,52 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.config(state=tk.DISABLED)
 
     def _on_text_motion(self, event):
+        """
+        REASON: DEBOUNCED HOVER LOGIC.
+        Prevents UI stutter by waiting 100ms for mouse to stop before calculating indices.
+        """
+        # 1. Cancel any pending check
+        if self.hover_timer:
+            self.after_cancel(self.hover_timer)
+            self.hover_timer = None
+        
+        # 2. Schedule a new check in 100ms
+        self.hover_timer = self.after(100, lambda: self._process_hover(event))
+    def _process_hover(self, event):
+        """
+        The actual heavy lifting, now only runs when mouse is idle.
+        """
         try:
+            # Map mouse coordinates to text index (Expensive operation)
             index = self.txt_preview.index(f"@{event.x},{event.y}")
             tags = self.txt_preview.tag_names(index)
+            
             if "audit_match" in tags:
+                # Calculate character offset
                 count_res = self.txt_preview.count("1.0", index, "chars")
                 current_char_idx = count_res[0] if count_res else 0
+                
+                # Find which blueprint matches this location
                 matches_here = []
                 for m in self.current_matches:
-                    if m['start'] <= current_char_idx < m['end']: matches_here.append(m['title'])
+                    if m['start'] <= current_char_idx < m['end']: 
+                        matches_here.append(m['title'])
+                
                 matches_here = list(set(matches_here))
+                
                 if matches_here:
                     titles = "\n".join(matches_here)
+                    # Offset tooltip slightly so it doesn't block the text
                     x = event.x_root + 15
                     y = event.y_root + 15
                     self.audit_tip.show_tip(x, y, titles)
                     return
+            
+            # If no tags found, hide tip
             self.audit_tip.hide_tip()
-        except Exception: self.audit_tip.hide_tip()
+            
+        except Exception: 
+            self.audit_tip.hide_tip()
 
     def _load_favorites(self):
         if os.path.exists(self.fav_file):

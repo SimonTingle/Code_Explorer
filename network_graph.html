@@ -2,41 +2,126 @@
         <!DOCTYPE html>
         <html>
         <head>
-          <style> body { margin: 0; background: #000005; overflow: hidden; } </style>
-          <script src="https://unpkg.com/three@0.160.0/build/three.js"></script>
+          <style> 
+            body { margin: 0; background: #000005; overflow: hidden; font-family: sans-serif; } 
+            
+            #matrix-hud {
+                position: fixed; right: 0; top: 0; bottom: 0; width: 280px;
+                background: rgba(0, 15, 0, 0.6);
+                border-left: 2px solid #00ff00;
+                overflow: hidden; pointer-events: none; display: none; z-index: 100;
+                box-shadow: -5px 0 15px rgba(0, 255, 0, 0.2);
+            }
+            .matrix-stream {
+                color: #00ff00; font-family: 'Courier New', Courier, monospace;
+                font-size: 11px; padding: 20px; white-space: pre-wrap;
+                text-shadow: 0 0 5px #00ff00;
+                animation: matrix-scroll 15s linear infinite;
+            }
+            @keyframes matrix-scroll {
+                0% { transform: translateY(100vh); }
+                100% { transform: translateY(-100%); }
+            }
+            #hud-header {
+                position: absolute; top: 0; left: 0; right: 0;
+                background: #00ff00; color: #000;
+                font-size: 10px; font-weight: bold; padding: 2px 10px; z-index: 101;
+                text-transform: uppercase;
+            }
+          </style>
+          
           <script src="https://unpkg.com/3d-force-graph@1.73.2/dist/3d-force-graph.min.js"></script>
           <script src="https://unpkg.com/three-spritetext@1.8.1/dist/three-spritetext.min.js"></script>
         </head>
         <body>
+          <div id="matrix-hud">
+            <div id="hud-header">Data Stream: Logic Reference</div>
+            <div id="hud-content" class="matrix-stream"></div>
+          </div>
           <div id="3d-graph"></div>
-          <script>
-            async function load() {
-                const r = await fetch('graph_data.json?t=' + Date.now());
-                const data = await r.json();
-                
-                const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
-                    .graphData(data)
-                    .nodeLabel('name')
-                    .nodeColor('color')
-                    .nodeVal('val')
-                    .nodeResolution(24)
-                    .linkWidth(l => l.type === 'gravity' ? 1 : 0.2)
-                    .linkColor(l => l.type === 'gravity' ? '#555' : '#333')
-                    .backgroundColor('#000005')
-                    .onNodeClick(node => {
-                        const dist = 50;
-                        const distRatio = 1 + dist/Math.hypot(node.x, node.y, node.z);
-                        Graph.cameraPosition(
-                            { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
-                            node, 
-                            3000
-                        );
-                    });
 
-                Graph.d3Force('charge').strength(node => node.type === 'folder' ? -200 : -30);
-                Graph.d3Force('link').distance(link => link.type === 'gravity' ? 100 : 30);
+          <script>
+            const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
+                .nodeLabel('name')
+                .nodeColor('color')
+                .nodeVal('val')
+                .nodeResolution(24)
+                .linkWidth(l => l.type === 'logic_link' ? 2.5 : (l.type === 'gravity' ? 1.5 : 0.3))
+                .linkColor(l => l.type === 'logic_link' ? '#00FF00' : (l.type === 'gravity' ? '#666' : '#333'))
+                .linkDirectionalParticles(l => l.type === 'logic_link' ? 5 : 0)
+                .linkDirectionalParticleSpeed(0.005)
+                .linkDirectionalParticleWidth(3)
+                .backgroundColor('#000005')
+                .onLinkHover(link => {
+                    const hud = document.getElementById('matrix-hud');
+                    const content = document.getElementById('hud-content');
+                    if (link && link.type === 'logic_link') {
+                        content.innerText = link.snippet || "INITIATING DATA SCAN...\nNO RELEVANT BYTES FOUND.";
+                        hud.style.display = 'block';
+                    } else {
+                        hud.style.display = 'none';
+                    }
+                })
+                .onNodeClick(node => {
+                    const dist = 60;
+                    const distRatio = 1 + dist/Math.hypot(node.x, node.y, node.z);
+                    Graph.cameraPosition(
+                        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
+                        node, 2500
+                    );
+                });
+
+            Graph.d3Force('charge').strength(node => node.type === 'folder' ? -350 : -40);
+            Graph.d3Force('link').distance(link => link.type === 'gravity' ? 120 : 40);
+            
+            /* REASON: Zero-G Logic Links! 
+               We set the strength of 'logic_link' to 0 so they don't pull planets out of orbit. */
+            Graph.d3Force('link').strength(link => link.type === 'logic_link' ? 0.0 : 1.0);
+
+            // --- THE HEARTBEAT LOOP ---
+            let currentLinkCount = 0;
+
+            async function checkPulse() {
+                try {
+                    const r = await fetch('graph_data.json?t=' + Date.now());
+                    const data = await r.json();
+                    
+                    if (data.links.length !== currentLinkCount) {
+                        console.log("Pulse detected: Updating Graph Data...");
+                        currentLinkCount = data.links.length;
+                        
+                        // REASON: Added safety check. If graph is empty, don't try to map nodes.
+                        const currentGraphData = Graph.graphData();
+                        
+                        if (currentGraphData && currentGraphData.nodes && currentGraphData.nodes.length > 0) {
+                            // 1. Snapshot old positions
+                            const nodeMap = new Map(currentGraphData.nodes.map(n => [n.id, n]));
+                            
+                            // 2. Restore positions to new data
+                            data.nodes.forEach(n => {
+                                const old = nodeMap.get(n.id);
+                                if (old) {
+                                    n.x = old.x; n.y = old.y; n.z = old.z;
+                                    n.vx = old.vx; n.vy = old.vy; n.vz = old.vz;
+                                }
+                            });
+                        }
+
+                        // 3. Inject new data
+                        Graph.graphData(data);
+                        
+                        // 4. FREEZE: Prevent explosion by setting Alpha to 0 immediately
+                        Graph.d3Alpha(0); 
+                        Graph.d3Restart();
+                    }
+                } catch (e) {
+                    // REASON: Log the actual error to console for debugging
+                    console.log("Waiting for data stream...", e);
+                }
             }
-            load();
+
+            checkPulse();
+            setInterval(checkPulse, 2500);
           </script>
         </body>
         </html>

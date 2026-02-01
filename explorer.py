@@ -976,7 +976,154 @@ class LiveServer(threading.Thread):
                 self.httpd.serve_forever()
             except Exception as e:
                 print(f"[LiveServer] Runtime Error: {e}")
+class GitHandler:
+    """
+    REASON: ROBUST GIT INTEGRATION.
+    Wraps subprocess calls in try/except blocks to prevent crashes.
+    Extracts Branch, Flux (modified files), and Last Author.
+    """
+    def __init__(self):
+        self.has_git = bool(self._run_git(["--version"]))
 
+    def _run_git(self, args, cwd=None):
+        try:
+            # Timeout prevents hanging on large repos
+            result = subprocess.run(
+                ["git"] + args, 
+                cwd=cwd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True, 
+                timeout=2,
+                encoding='utf-8', 
+                errors='ignore' # Prevent decoding errors on binary filenames
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except Exception:
+            return None
+
+    def get_status(self, path):
+        if not self.has_git: return {"branch": "NO GIT", "flux": "N/A", "author": "---"}
+        
+        # Check if is repo
+        if not self._run_git(["rev-parse", "--is-inside-work-tree"], cwd=path):
+            return {"branch": "NO REPO", "flux": "0", "author": "---"}
+
+        try:
+            # 1. Get Branch
+            branch = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) or "DETACHED"
+            
+            # 2. Get Flux (Count modified files)
+            flux_raw = self._run_git(["status", "--porcelain"], cwd=path)
+            flux_count = len(flux_raw.splitlines()) if flux_raw else 0
+            
+            # 3. Get Last Author (Time relative)
+            author = self._run_git(["log", "-1", "--format=%an (%cr)"], cwd=path) or "Unknown"
+
+            return {"branch": branch[:10], "flux": str(flux_count), "author": author}
+        except:
+            return {"branch": "ERR", "flux": "?", "author": "---"}
+
+class OpsHUD(tk.Canvas):
+    """
+    REASON: PIP-BOY STYLE TACTICAL DISPLAY.
+    Uses a Canvas to draw retro scanlines and glowing text.
+    "Borderless" implementation embedded in the UI.
+    """
+    def __init__(self, parent, git_handler, width=200, height=180):
+        super().__init__(parent, width=width, height=height, bg="#001100", highlightthickness=0)
+        self.git = git_handler
+        self.current_path = None
+        self.scan_line_y = 0
+        self.stats = {}
+        
+        # REASON: Pre-load font to avoid lag
+        self.font_lg = ("Courier", 12, "bold")
+        self.font_sm = ("Courier", 9)
+        
+        # Start animation loop
+        self._animate()
+
+    def update_data(self, path, total_files, total_size):
+        self.current_path = path
+        
+        # 1. Git Data (Thread-safe call ideally, but fast enough here)
+        git_dat = self.git.get_status(path)
+        
+        # 2. Heuristics (Quick scan for TODOs in top files)
+        todo_count = 0
+        try:
+            # Only scan first 5 files to preserve performance
+            scanned = 0
+            with os.scandir(path) as it:
+                for entry in it:
+                    if scanned > 5: break
+                    if entry.is_file() and entry.name.endswith(('.py', '.js', '.md')):
+                        try:
+                            with open(entry.path, 'r', errors='ignore') as f:
+                                content = f.read(5000) # Read head only
+                                todo_count += content.count("TODO") + content.count("FIXME")
+                            scanned += 1
+                        except: pass
+        except: pass
+
+        self.stats = {
+            "files": total_files,
+            "size": total_size,
+            "branch": git_dat['branch'],
+            "flux": git_dat['flux'],
+            "author": git_dat['author'],
+            "todos": todo_count
+        }
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        w, h = int(self['width']), int(self['height'])
+        
+        # 1. Background Grid (Tactical Look)
+        self.create_line(10, 30, w-10, 30, fill="#004400", width=1)
+        self.create_line(10, 100, w-10, 100, fill="#004400", width=1)
+        
+        if not self.stats:
+            self._text(w/2, h/2, "SYSTEM OFFLINE", "#00ff00", center=True)
+            return
+
+        # 2. SECTOR VITALS
+        self._text(10, 10, "SECTOR VITALS", "#00ff00")
+        self._text(10, 25, f"MASS: {self.stats['size']}", "#33cc33", small=True)
+        self._text(100, 25, f"UNITS: {self.stats['files']}", "#33cc33", small=True)
+
+        # 3. GIT TELEMETRY
+        color_flux = "#ff3333" if int(self.stats['flux']) > 0 else "#33cc33"
+        self._text(10, 45, f"BRANCH: {self.stats['branch']}", "#00ff00")
+        self._text(10, 60, f"FLUX: {self.stats['flux']} Pending", color_flux, small=True)
+        self._text(10, 75, f"LAST: {self.stats['author']}", "#33cc33", small=True)
+
+        # 4. BIO-SIGNS
+        self._text(10, 110, "CODE BIO-SIGNS", "#00ff00")
+        self._text(10, 125, f"DEBT MARKERS: {self.stats['todos']}", "#ffb000", small=True)
+        
+        health = max(0, 100 - (self.stats['todos'] * 5))
+        self._text(10, 140, f"INTEGRITY: {health}%", "#33cc33", small=True)
+        
+        # Health Bar
+        self.create_rectangle(10, 155, 10 + (health * 1.5), 160, fill="#00ff00", outline="")
+
+    def _text(self, x, y, text, color, small=False, center=False):
+        font = self.font_sm if small else self.font_lg
+        anchor = tk.CENTER if center else tk.NW
+        # Glow effect (draw darker behind)
+        self.create_text(x+1, y+1, text=text, fill="#003300", font=font, anchor=anchor)
+        self.create_text(x, y, text=text, fill=color, font=font, anchor=anchor)
+
+    def _animate(self):
+        # Retro Scanline Effect
+        self.delete("scanline")
+        w = int(self['width'])
+        self.create_line(0, self.scan_line_y, w, self.scan_line_y, fill="#005500", tags="scanline", width=2)
+        self.scan_line_y = (self.scan_line_y + 2) % int(self['height'])
+        self.after(50, self._animate)
 class ExplorerUI(ttk.Frame):
     
     def __init__(self, parent, logic_handler):
@@ -988,21 +1135,21 @@ class ExplorerUI(ttk.Frame):
         self.preview_offset = 0; self.current_preview_file = None
         self.audit_manager = AuditManager(); self.current_matches = []
         
-        
-        # REASON: Performance Tuning - Variable to hold the hover timer
-        self.hover_timer = None
-        
-        # REASON: Initialize the server with a robust port scanner
-        # We start at 8099, but the server might pick 8100, 8101, etc.
-        requested_port = 8099
-        self.server_thread = LiveServer(requested_port)
+        # REASON: Initialize Debounce Timer
+        self.hover_timer = None 
+
+        # REASON: Initialize Git Handler BEFORE setup_layout
+        # The OpsHUD needs this object to exist immediately.
+        self.git_handler = GitHandler()
+
+        # Phase 2: Dynamic Port Selection
+        self.server_thread = LiveServer(8099)
         self.server_thread.start()
-        
-        # Store the ACTUAL port being used
         self.server_port = self.server_thread.actual_port
         
         self.graph_generator = ConfigurableGraphGenerator()
         
+        # Now it is safe to build the layout
         self._setup_layout(); self._setup_menus(); self._setup_context_menu(); self._bind_events(); self._load_favorites() 
         self.highlighter = SyntaxHighlighter(self.txt_preview); self.audit_tip = ToolTip(self.txt_preview)
         self.load_path(self.current_path)
@@ -1010,22 +1157,32 @@ class ExplorerUI(ttk.Frame):
     def _setup_layout(self):
         self.pack(fill=tk.BOTH, expand=True)
         
+        # --- Top Container (Nav + Monitor) ---
         top_container = ttk.Frame(self, padding=(5, 2))
         top_container.pack(fill=tk.X)
+        
         nav_frame = ttk.Frame(top_container)
         nav_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
         ttk.Button(nav_frame, text="Up", command=self.go_up, width=4).pack(side=tk.LEFT, padx=(0, 5))
         self.path_var = tk.StringVar()
         ttk.Entry(nav_frame, textvariable=self.path_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
         ttk.Label(nav_frame, text="S:", font=("Helvetica", 10)).pack(side=tk.LEFT)
-        self.search_var = tk.StringVar(); self.search_entry = ttk.Entry(nav_frame, textvariable=self.search_var, width=12)
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(nav_frame, textvariable=self.search_var, width=12)
         self.search_entry.pack(side=tk.LEFT, padx=(2, 5))
+        
         ttk.Button(nav_frame, text="Go", command=self.perform_search, width=4).pack(side=tk.LEFT)
         self.clear_btn = ttk.Button(nav_frame, text="X", width=2, command=self.clear_search, state=tk.DISABLED)
         self.clear_btn.pack(side=tk.LEFT, padx=(2, 0))
-        monitor_frame = ttk.Frame(top_container); monitor_frame.pack(side=tk.RIGHT, padx=(5, 0))
-        self.monitor = SystemMonitor(monitor_frame); self.monitor.pack(side=tk.LEFT)
+        
+        monitor_frame = ttk.Frame(top_container)
+        monitor_frame.pack(side=tk.RIGHT, padx=(5, 0))
+        self.monitor = SystemMonitor(monitor_frame)
+        self.monitor.pack(side=tk.LEFT)
 
+        # --- Memory Buttons ---
         mem_frame = ttk.Frame(self, padding=(5, 0, 5, 5))
         mem_frame.pack(fill=tk.X)
         self.mem_buttons = []
@@ -1039,29 +1196,50 @@ class ExplorerUI(ttk.Frame):
             self.mem_buttons.append(btn)
             self.mem_tips.append(ToolTip(btn, ""))
 
-        self.paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        self.paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        # --- REASON: SPLIT VIEW FOR HUD ---
+        # Created a main container to hold the OpsHUD (Left) and the File Explorer (Right)
+        main_content = ttk.Frame(self)
+        main_content.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # 1. THE OPS-HUD (Left Side)
+        # REASON: Borderless 'Pip-Boy' style display for Git/File stats
+        self.ops_hud = OpsHUD(main_content, self.git_handler, width=220, height=400)
+        self.ops_hud.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+
+        # 2. EXISTING PANED WINDOW (Right Side)
+        # REASON: Changed parent from 'self' to 'main_content' to sit next to the HUD
+        # Old Code: self.paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        self.paned_window = ttk.PanedWindow(main_content, orient=tk.HORIZONTAL)
+        self.paned_window.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
+        # --- Tree View Setup ---
         self.tree_frame = ttk.Frame(self.paned_window)
         self.paned_window.add(self.tree_frame, weight=1)
+        
         self.tree = ttk.Treeview(self.tree_frame, columns=("size", "modified"), selectmode="browse")
         self.tree.heading("#0", text="Name ↑↓", command=lambda: self._sort_column("#0"))
         self.tree.heading("size", text="Size ↑↓", command=lambda: self._sort_column("size"))
         self.tree.heading("modified", text="Date Modified ↑↓", command=lambda: self._sort_column("modified"))
+        
         self.tree.column("#0", minwidth=200, width=300, stretch=True)
         self.tree.column("size", minwidth=60, width=80, anchor=tk.E)
         self.tree.column("modified", minwidth=100, width=120)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
+        # --- Preview Pane Setup ---
         self.preview_frame = ttk.Frame(self.paned_window, relief="sunken", padding=5)
         self.paned_window.add(self.preview_frame, weight=0)
+        
         self.lbl_meta = ttk.Label(self.preview_frame, text="Select a file")
         self.lbl_meta.pack(fill=tk.X)
         self.copy_btn = ttk.Button(self.preview_frame, text="Copy", command=self.copy_preview_to_clipboard)
+        
         self.text_container = ttk.Frame(self.preview_frame)
         self.text_container.pack(fill=tk.BOTH, expand=True)
+        
         self.txt_preview = tk.Text(self.text_container, wrap="none", height=10, width=35, state=tk.DISABLED)
         self.txt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
         self.load_more_btn = ttk.Button(self.preview_frame, text="Load More...", command=self.load_next_chunk)
 
     def _setup_menus(self):
@@ -1274,6 +1452,17 @@ class ExplorerUI(ttk.Frame):
     def _finish_load(self, items, path):
         if items is not None:
             self.current_path = path; self.path_var.set(path); self._populate_tree(items)
+            
+            # REASON: UPDATE OPS-HUD STATISTICS
+            # Calculate total size for the HUD
+            total_size_str = "0 B"
+            try:
+                raw_size = sum(itm['raw_size'] for itm in items if not itm['is_dir'])
+                total_size_str = self.logic._format_size(raw_size)
+            except: pass
+            
+            self.ops_hud.update_data(path, len(items), total_size_str)
+            
         self.monitor.set_tasks(0)
 
     def perform_search(self):

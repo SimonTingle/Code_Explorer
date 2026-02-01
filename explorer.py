@@ -397,9 +397,13 @@ class ConfigurableGraphGenerator:
     def _generate_data(self, root_path, allowed_exts, allowed_folders):
         nodes = []
         links = []
-        id_counter = 0
-        path_map = {} 
         
+        # REASON FOR UPDATE: Removed 'id_counter'. 
+        # We now use Deterministic IDs (the file path itself) so planets don't reset 
+        # when the file list changes.
+        # id_counter = 0 
+        
+        path_map = {} 
         ignored_directories = {'node_modules', 'lib', '.git', 'venv', 'dist', 'build', '__pycache__'}
 
         # 1. Structural Scan: Folders and Files
@@ -412,11 +416,11 @@ class ConfigurableGraphGenerator:
                 continue
 
             # --- SUN (FOLDER) SCALING ---
-            folder_id = path_map.get(root)
-            if folder_id is None:
-                folder_id = id_counter
-                path_map[root] = folder_id
-                id_counter += 1
+            # REASON: The ID is now the absolute path. This ensures persistence.
+            folder_id = root
+            
+            if folder_id not in path_map:
+                path_map[folder_id] = True # Mark as seen
                 
                 # REASON: Recursive size determines "Sun" mass
                 raw_folder_size = self._get_dir_size(root) / 1024 # KB
@@ -424,25 +428,26 @@ class ConfigurableGraphGenerator:
                 
                 is_root = (root == root_path)
                 nodes.append({
-                    "id": folder_id, 
+                    "id": folder_id, # Deterministic ID
                     "name": os.path.basename(root) if not is_root else "SUN (Root)", 
                     "val": sun_val * 2 if is_root else sun_val, 
                     "color": "#FFFFE0" if is_root else "#FFFFFF", 
-                    "type": "folder"
+                    "type": "folder",
+                    "path": root
                 })
 
             parent_dir = os.path.dirname(root)
-            if parent_dir in path_map:
-                links.append({"source": path_map[parent_dir], "target": folder_id, "width": 1.5, "color": "#666666", "type": "gravity"})
+            # Only link if parent is within our scan scope
+            if parent_dir.startswith(root_path) and parent_dir != root:
+                 # Check if parent exists in our nodes to prevent orphans (optional safety)
+                 links.append({"source": parent_dir, "target": folder_id, "width": 1.5, "color": "#666666", "type": "gravity"})
 
             # --- PLANET (FILE) SCALING ---
             for f in files:
                 _, ext = os.path.splitext(f)
                 if ext.lower() not in allowed_exts: continue
                 file_path = os.path.join(root, f)
-                file_id = id_counter
-                path_map[file_path] = file_id
-                id_counter += 1
+                file_id = file_path # Deterministic ID
                 
                 try: raw_file_size = os.path.getsize(file_path) / 1024
                 except: raw_file_size = 1
@@ -493,8 +498,6 @@ class ConfigurableGraphGenerator:
         """
         Generates the 3D environment with a Matrix-style HUD for code diagnostics.
         """
-
-        # REASON FOR UPDATE: Implementing the 'Matrix' HUD and relative True-Mass scaling.
         return r"""
         <!DOCTYPE html>
         <html>
@@ -502,54 +505,33 @@ class ConfigurableGraphGenerator:
           <style> 
             body { margin: 0; background: #000005; overflow: hidden; font-family: sans-serif; } 
             
-            /* REASON: The 'Matrix' Diagnostic Sidebar HUD */
             #matrix-hud {
-                position: fixed;
-                right: 0;
-                top: 0;
-                bottom: 0;
-                width: 280px;
+                position: fixed; right: 0; top: 0; bottom: 0; width: 280px;
                 background: rgba(0, 15, 0, 0.6);
                 border-left: 2px solid #00ff00;
-                overflow: hidden;
-                pointer-events: none;
-                display: none;
-                z-index: 100;
+                overflow: hidden; pointer-events: none; display: none; z-index: 100;
                 box-shadow: -5px 0 15px rgba(0, 255, 0, 0.2);
             }
-
             .matrix-stream {
-                color: #00ff00;
-                font-family: 'Courier New', Courier, monospace;
-                font-size: 11px;
-                padding: 20px;
-                white-space: pre-wrap;
+                color: #00ff00; font-family: 'Courier New', Courier, monospace;
+                font-size: 11px; padding: 20px; white-space: pre-wrap;
                 text-shadow: 0 0 5px #00ff00;
-                /* REASON: Matrix-style upward scrolling credits effect */
                 animation: matrix-scroll 15s linear infinite;
             }
-
             @keyframes matrix-scroll {
                 0% { transform: translateY(100vh); }
                 100% { transform: translateY(-100%); }
             }
-
             #hud-header {
-                position: absolute;
-                top: 0;
-                left: 0;
-                right: 0;
-                background: #00ff00;
-                color: #000;
-                font-size: 10px;
-                font-weight: bold;
-                padding: 2px 10px;
-                z-index: 101;
+                position: absolute; top: 0; left: 0; right: 0;
+                background: #00ff00; color: #000;
+                font-size: 10px; font-weight: bold; padding: 2px 10px; z-index: 101;
                 text-transform: uppercase;
             }
           </style>
-          <script src="https://unpkg.com/three@0.160.0/build/three.js"></script>
+          
           <script src="https://unpkg.com/3d-force-graph@1.73.2/dist/3d-force-graph.min.js"></script>
+          <script src="https://unpkg.com/three-spritetext@1.8.1/dist/three-spritetext.min.js"></script>
         </head>
         <body>
           <div id="matrix-hud">
@@ -559,53 +541,37 @@ class ConfigurableGraphGenerator:
           <div id="3d-graph"></div>
 
           <script>
-            // REASON: Heartbeat Logic to enable Real-Time Background Loading
             const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
                 .nodeLabel('name')
                 .nodeColor('color')
-                /* REASON: Planets and Suns are now sized by True-Mass (file size) */
                 .nodeVal('val')
                 .nodeResolution(24)
-                
-                /* REASON: Logic links are highlighted with pulses; gravity remains subtle */
                 .linkWidth(l => l.type === 'logic_link' ? 2.5 : (l.type === 'gravity' ? 1.5 : 0.3))
                 .linkColor(l => l.type === 'logic_link' ? '#00FF00' : (l.type === 'gravity' ? '#666' : '#333'))
-                
-                /* REASON: Neon green pulses for code-level associations */
                 .linkDirectionalParticles(l => l.type === 'logic_link' ? 5 : 0)
                 .linkDirectionalParticleSpeed(0.005)
                 .linkDirectionalParticleWidth(3)
                 .backgroundColor('#000005')
-
-                /* REASON: Matrix HUD trigger logic */
                 .onLinkHover(link => {
                     const hud = document.getElementById('matrix-hud');
                     const content = document.getElementById('hud-content');
-                    
                     if (link && link.type === 'logic_link') {
-                        // Show snippets in the scrolling HUD
                         content.innerText = link.snippet || "INITIATING DATA SCAN...\nNO RELEVANT BYTES FOUND.";
                         hud.style.display = 'block';
                     } else {
                         hud.style.display = 'none';
                     }
                 })
-
                 .onNodeClick(node => {
-                    /* REASON: Cinematic fly-to camera logic */
                     const dist = 60;
                     const distRatio = 1 + dist/Math.hypot(node.x, node.y, node.z);
                     Graph.cameraPosition(
                         { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, 
-                        node, 
-                        2500
+                        node, 2500
                     );
                 });
 
-            /* REASON: Physics tweaked to balance massive Suns and lighter Planets */
             Graph.d3Force('charge').strength(node => node.type === 'folder' ? -350 : -40);
-            
-            /* REASON: Zero-G Logic Links! */
             Graph.d3Force('link').distance(link => link.type === 'gravity' ? 120 : 40);
             Graph.d3Force('link').strength(link => link.type === 'logic_link' ? 0.0 : 1.0);
 
@@ -614,47 +580,44 @@ class ConfigurableGraphGenerator:
 
             async function checkPulse() {
                 try {
-                    // Fetch data with a timestamp to bypass browser caching
                     const r = await fetch('graph_data.json?t=' + Date.now());
                     const data = await r.json();
                     
-                    // Only update if we found new connections (links increased)
                     if (data.links.length !== currentLinkCount) {
                         console.log("Pulse detected: Updating Graph Data...");
                         currentLinkCount = data.links.length;
                         
-                        // REASON: This is the "Discreet Update" logic
-                        // 1. Snapshot the current positions of the planets
-                        const oldNodes = Graph.graphData().nodes;
-                        const nodeMap = new Map(oldNodes.map(n => [n.id, n]));
+                        // REASON: Added safety check. If graph is empty, don't try to map nodes.
+                        const currentGraphData = Graph.graphData();
                         
-                        // 2. Map old positions to the new data
-                        data.nodes.forEach(n => {
-                            const old = nodeMap.get(n.id);
-                            if (old) {
-                                n.x = old.x; n.y = old.y; n.z = old.z;
-                                n.vx = old.vx; n.vy = old.vy; n.vz = old.vz;
-                            }
-                        });
+                        if (currentGraphData && currentGraphData.nodes.length > 0) {
+                            // 1. Snapshot old positions
+                            const nodeMap = new Map(currentGraphData.nodes.map(n => [n.id, n]));
+                            
+                            // 2. Restore positions to new data
+                            data.nodes.forEach(n => {
+                                const old = nodeMap.get(n.id);
+                                if (old) {
+                                    n.x = old.x; n.y = old.y; n.z = old.z;
+                                    n.vx = old.vx; n.vy = old.vy; n.vz = old.vz;
+                                }
+                            });
+                        }
 
                         // 3. Inject new data
                         Graph.graphData(data);
                         
-                        // 4. FREEZE: Set Alpha (Temperature) to near-zero immediately.
-                        // This prevents the "Big Bang" reset. The graph will stay stable
-                        // and only the new Green Lines will fade in.
+                        // 4. FREEZE: Prevent explosion
                         Graph.d3Alpha(0); 
                         Graph.d3Restart();
                     }
                 } catch (e) {
-                    console.log("Waiting for data stream...");
+                    // REASON: Log the actual error to console for debugging
+                    console.log("Waiting for data stream...", e);
                 }
             }
 
-            // Initial Load
             checkPulse();
-            
-            // Poll every 2.5 seconds for new background analysis
             setInterval(checkPulse, 2500);
           </script>
         </body>

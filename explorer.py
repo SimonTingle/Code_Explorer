@@ -1034,44 +1034,90 @@ class GitHandler:
             return {"branch": branch[:10], "flux": str(flux_count), "author": author}
         except:
             return {"branch": "ERR", "flux": "?", "author": "---"}
+class MockRemoteHandler:
+    """
+    REASON: SIMULATES GITHUB/GITLAB CONNECTION.
+    Generates fake PRs and Issues to test the UI layout without needing API keys yet.
+    """
+    def get_pull_requests(self):
+        return [
+            {"id": "#42", "title": "Fix memory leak in parser", "author": "simon-t", "status": "OPEN"},
+            {"id": "#43", "title": "Refactor graph logic", "author": "dev-bot", "status": "REVIEW"},
+            {"id": "#45", "title": "Update dependencies", "author": "security", "status": "OPEN"},
+        ]
 
+    def get_issues(self):
+        return [
+            {"id": "!101", "title": "Crash on startup (Mac)", "severity": "HIGH"},
+            {"id": "!102", "title": "Add search debounce", "severity": "LOW"},
+        ]
+    
+    def get_pr_details(self, pr_id):
+        """Returns the conversation thread for the main preview pane."""
+        return f"""
+        PULL REQUEST {pr_id} DETAILS
+        --------------------------------------------------
+        STATUS: Open  |  REVIEWERS: 2  |  CI: Passing
+        
+        [simon-t] (2 hours ago):
+        I've tracked down the leak to the graph generator.
+        The nodes weren't being garbage collected.
+        
+        [reviewer-1] (1 hour ago):
+        Nice catch. Did you check the thread pool cleanup?
+        
+        [simon-t] (30 mins ago):
+        Yes, added a 'shutdown' hook in the destructor.
+        """
 class OpsHUD(tk.Canvas):
     """
-    REASON: UPDATED HUD.
-    - precise text measuring (no more guessing)
-    - 10px internal margins
-    - robust scrolling commit log
+    REASON: DUAL-CHANNEL PIP-BOY DISPLAY.
+    - [SYS] Channel: Local Git & File Stats.
+    - [NET] Channel: Remote PRs & Issues.
+    - Clickable tabs to switch views.
     """
-    def __init__(self, parent, git_handler, width=220, height=500):
+    def __init__(self, parent, git_handler, preview_callback, width=220, height=500):
         super().__init__(parent, width=width, height=height, bg="#001100", highlightthickness=0)
         self.git = git_handler
+        self.remote = MockRemoteHandler() # REASON: Placeholder for future GitHub API
+        self.preview_callback = preview_callback # REASON: To print PR details to the main screen
+        
         self.current_path = None
         self.scan_line_y = 0
         self.stats = {}
         self.commits = []
+        self.prs = []
+        self.issues = []
         
+        self.active_channel = "SYS" # Options: SYS, NET
         self.base_font_size = 12
         self.font_family = "Courier"
         
-        # Embedded Listbox for Commits
-        self.lb_commits = tk.Listbox(
+        # Embedded Listbox
+        self.lb_main = tk.Listbox(
             self, bg="#001100", fg="#00ff00", 
             font=("Courier", 9), bd=0, highlightthickness=0,
             selectbackground="#003300", activestyle="none"
         )
+        self.lb_main.bind('<<ListboxSelect>>', self._on_list_select)
+        
+        # Bind Mouse Clicks for Tab Switching
+        self.bind("<Button-1>", self._on_canvas_click)
         
         self._animate()
 
     def update_data(self, path, total_files, total_size):
         self.current_path = path
         
-        # 1. Standard Stats
+        # SYS Data
         git_dat = self.git.get_status(path)
-        
-        # 2. Commits
         self.commits = self.git.get_commit_log(path)
         
-        # 3. Heuristics (Quick Scan)
+        # NET Data (Mock)
+        self.prs = self.remote.get_pull_requests()
+        self.issues = self.remote.get_issues()
+        
+        # Heuristics
         todo_count = 0
         try:
             scanned = 0
@@ -1088,14 +1134,162 @@ class OpsHUD(tk.Canvas):
         except: pass
 
         self.stats = {
-            "files": total_files,
-            "size": total_size,
-            "branch": git_dat['branch'],
-            "flux": git_dat['flux'],
-            "author": git_dat['author'],
-            "todos": todo_count
+            "files": total_files, "size": total_size,
+            "branch": git_dat['branch'], "flux": git_dat['flux'],
+            "author": git_dat['author'], "todos": todo_count
         }
         self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        w, h = int(self['width']), int(self['height'])
+        if not self.stats: return
+        
+        # REASON: Calculate Safe Width (Padding)
+        safe_w = w - 20 
+
+        # 1. CHANNEL TABS (Top Bar)
+        c_sys = "#00ff00" if self.active_channel == "SYS" else "#005500"
+        c_net = "#00ff00" if self.active_channel == "NET" else "#005500"
+        
+        self._text(40, 15, "[ SYS ]", c_sys, safe_w, is_bold=True, center=True)
+        self._text(140, 15, "[ NET ]", c_net, safe_w, is_bold=True, center=True)
+        self.create_line(10, 30, w-10, 30, fill="#004400", width=1)
+
+        # 2. RENDER ACTIVE CHANNEL
+        # REASON: The old code here tried to draw everything and used 'lb_commits'.
+        # We must now delegate to the sub-methods which use the correct 'lb_main'.
+        
+        if self.active_channel == "SYS":
+            self._draw_sys_channel(w, h, safe_w)
+        else:
+            self._draw_net_channel(w, h, safe_w)
+
+        # --- OLD CODE BEING REMOVED ---
+        # if not self.stats: ...
+        # self._text(10, 10, "SECTOR VITALS", ...)
+        # self.lb_commits.delete(0, tk.END)  <-- THIS WAS CAUSING THE CRASH
+
+    def _draw_sys_channel(self, w, h, safe_w):
+        if not self.stats: 
+            self._text(w/2, 60, "NO DATA LINK", "#00ff00", safe_w, center=True)
+            return
+
+        # Grid lines (Adjusted for new spacing)
+        # OLD CODE: self.create_line(10, 100, w-10, 100, fill="#004400", width=1)
+        # OLD CODE: self.create_line(10, 170, w-10, 170, fill="#004400", width=1)
+        self.create_line(10, 105, w-10, 105, fill="#004400", width=1)
+        self.create_line(10, 175, w-10, 175, fill="#004400", width=1)
+
+        # --- SECTOR VITALS (Stacking) ---
+        # REASON: Use dynamic Y to allow text to flow naturally without overlapping
+        current_y = 40
+        line_h = 16 
+        
+        # OLD CODE: self._text(10, 40, f"MASS: {self.stats['size']}", "#33cc33", safe_w)
+        self._text(10, current_y, f"MASS: {self.stats['size']}", "#33cc33", safe_w)
+        
+        current_y += line_h
+        # OLD CODE: self._text(10, 55, f"UNITS: {self.stats['files']}", "#33cc33", safe_w)
+        self._text(10, current_y, f"UNITS: {self.stats['files']}", "#33cc33", safe_w)
+        
+        # --- GIT TELEMETRY (Stacking) ---
+        # REASON: Jump current_y to the next section (approx y=70 area)
+        current_y += (line_h + 5) 
+        
+        color_flux = "#ff3333" if int(self.stats.get('flux', 0)) > 0 else "#33cc33"
+        
+        # OLD CODE: self._text(10, 75, f"BRANCH: {self.stats['branch']}", "#00ff00", safe_w)
+        self._text(10, current_y, f"BRANCH: {self.stats['branch']}", "#00ff00", safe_w)
+        
+        # REASON: Move FLUX to its own line to prevent collision with long branch names
+        current_y += line_h
+        # OLD CODE: self._text(110, 75, f"FLUX: {self.stats['flux']}", color_flux, safe_w)
+        self._text(10, current_y, f"FLUX: {self.stats['flux']} Pending", color_flux, safe_w)
+
+        # --- BIO-SIGNS ---
+        # REASON: Jump current_y to the next section (approx y=115 area)
+        current_y = 115
+        
+        # OLD CODE: self._text(10, 110, "BIO-SIGNS", "#00ff00", safe_w, is_bold=True)
+        self._text(10, current_y, "BIO-SIGNS", "#00ff00", safe_w, is_bold=True)
+        
+        current_y += line_h
+        # OLD CODE: self._text(10, 125, f"DEBT: {self.stats['todos']}", "#ffb000", safe_w)
+        self._text(10, current_y, f"DEBT: {self.stats['todos']}", "#ffb000", safe_w)
+        
+        health = max(0, 100 - (self.stats['todos'] * 5))
+        current_y += line_h
+        # OLD CODE: self.create_rectangle(10, 140, 10 + (health * 1.5), 145, fill="#00ff00", outline="")
+        self.create_rectangle(10, current_y, 10 + (health * 1.5), current_y + 5, fill="#00ff00", outline="")
+
+        # --- COMMIT LOGS ---
+        # OLD CODE: self._text(10, 180, "LOCAL LOGS", "#00ff00", safe_w, is_bold=True)
+        self._text(10, 185, "LOCAL LOGS", "#00ff00", safe_w, is_bold=True)
+        
+        # REASON: Using unified 'lb_main'
+        # OLD CODE: self.lb_commits.delete(0, tk.END)
+        self.lb_main.delete(0, tk.END)
+        
+        for commit in self.commits:
+            # OLD CODE: self.lb_commits.insert(tk.END, f"[{commit[0]}] {commit[2]}")
+            self.lb_main.insert(tk.END, f"[{commit[0]}] {commit[2]}")
+        
+        list_h = h - 215
+        # OLD CODE: self.create_window(w/2, 210 + (list_h/2), window=self.lb_commits, width=w-10, height=list_h)
+        self.create_window(w/2, 215 + (list_h/2), window=self.lb_main, width=w-10, height=list_h)
+
+    def _draw_net_channel(self, w, h, safe_w):
+        # Grid
+        self.create_line(10, 140, w-10, 140, fill="#004400", width=1)
+
+        # UPLINK STATUS
+        self._text(w/2, 50, "UPLINK: ACTIVE", "#33cc33", safe_w, center=True)
+        self._text(w/2, 65, "SOURCE: GITHUB", "#005500", safe_w, center=True)
+
+        # PULL REQUESTS
+        self._text(10, 90, "OPEN PRs", "#00ff00", safe_w, is_bold=True)
+        
+        # REASON: Fixed crash by using the unified 'lb_main' widget instead of the old 'lb_commits'
+        # OLD CODE: self.lb_commits.delete(0, tk.END)
+        self.lb_main.delete(0, tk.END)
+        
+        for pr in self.prs:
+            # OLD CODE: self.lb_commits.insert(tk.END, f"{pr['id']} {pr['title']}")
+            self.lb_main.insert(tk.END, f"{pr['id']} {pr['title']}")
+            
+        # REASON: Using the same listbox for spacer and issues
+        self.lb_main.insert(tk.END, "") # Spacer
+        self.lb_main.insert(tk.END, "--- ISSUES ---")
+        
+        for issue in self.issues:
+            self.lb_main.insert(tk.END, f"{issue['id']} {issue['title']}")
+
+        list_h = h - 110
+        
+        # REASON: Ensure the window creation references the correct widget
+        # OLD CODE: self.create_window(w/2, 110 + (list_h/2), window=self.lb_commits, width=w-10, height=list_h)
+        self.create_window(w/2, 110 + (list_h/2), window=self.lb_main, width=w-10, height=list_h)
+
+    def _on_canvas_click(self, event):
+        # Hit detection for Tabs
+        if event.y < 30:
+            if event.x < 110: self.active_channel = "SYS"
+            else: self.active_channel = "NET"
+            self._draw()
+
+    def _on_list_select(self, event):
+        # Handle clicks on the list items
+        if self.active_channel == "NET":
+            selection = self.lb_main.curselection()
+            if selection:
+                text = self.lb_main.get(selection[0])
+                # Simple parsing of ID (e.g., "#42")
+                if text.startswith("#"):
+                    pr_id = text.split(" ")[0]
+                    # Callback to Main UI to show details
+                    details = self.remote.get_pr_details(pr_id)
+                    self.preview_callback(details)
 
     def _get_adaptive_font(self, text, max_width, is_bold=False):
         """
@@ -1116,21 +1310,21 @@ class OpsHUD(tk.Canvas):
             
         return (self.font_family, size, weight)
 
-    def _draw(self):
-        self.delete("all")
-        w, h = int(self['width']), int(self['height'])
+    # def _draw(self):
+    #     self.delete("all")
+    #     w, h = int(self['width']), int(self['height'])
         
-        # REASON: Define Safe Zone (10px padding on sides)
-        safe_w = w - 20 
+    #     # REASON: Define Safe Zone (10px padding on sides)
+    #     safe_w = w - 20 
         
-        # Grid Lines
-        self.create_line(10, 30, w-10, 30, fill="#004400", width=1)
-        self.create_line(10, 100, w-10, 100, fill="#004400", width=1)
-        self.create_line(10, 170, w-10, 170, fill="#004400", width=1)
+    #     # Grid Lines
+    #     self.create_line(10, 30, w-10, 30, fill="#004400", width=1)
+    #     self.create_line(10, 100, w-10, 100, fill="#004400", width=1)
+    #     self.create_line(10, 170, w-10, 170, fill="#004400", width=1)
 
-        if not self.stats:
-            self._text(w/2, 30, "SYSTEM OFFLINE", "#00ff00", safe_w, center=True)
-            return
+    #     if not self.stats:
+    #         self._text(w/2, 30, "SYSTEM OFFLINE", "#00ff00", safe_w, center=True)
+    #         return
 
         # 1. SECTOR VITALS
         self._text(10, 10, "SECTOR VITALS", "#00ff00", safe_w, is_bold=True)
@@ -1256,10 +1450,15 @@ class ExplorerUI(ttk.Frame):
         # 1. THE OPS-HUD (Left Side)
         # REASON: Borderless 'Pip-Boy' style display for Git/File stats
         # 1. THE OPS-HUD (Left Side)
-        self.ops_hud = OpsHUD(main_content, self.git_handler, width=220, height=400)
-        
-        # REASON: Added padx=10 on the left to create space from the window edge
-        # Added padx=5 on the right to separate it from the file tree
+        # 1. THE OPS-HUD (Left Side)
+        # REASON: Pass 'self.show_remote_details' as the callback
+        self.ops_hud = OpsHUD(
+            main_content, 
+            self.git_handler, 
+            preview_callback=self.show_remote_details, # <--- NEW CONNECTION
+            width=220, 
+            height=400
+        )
         self.ops_hud.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 5), pady=5)
 
         # 2. EXISTING PANED WINDOW (Right Side)
@@ -1297,7 +1496,13 @@ class ExplorerUI(ttk.Frame):
         self.txt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.load_more_btn = ttk.Button(self.preview_frame, text="Load More...", command=self.load_next_chunk)
-
+    def show_remote_details(self, text):
+        self.txt_preview.config(state=tk.NORMAL)
+        self.txt_preview.delete(1.0, tk.END)
+        self.txt_preview.insert(tk.END, text)
+        self.txt_preview.config(state=tk.DISABLED)
+        self.lbl_meta.config(text="REMOTE UPLINK DATA")
+        
     def _setup_menus(self):
         menubar = tk.Menu(self.master)
         file_menu = tk.Menu(menubar, tearoff=0); file_menu.add_command(label="Exit", command=self.master.quit); menubar.add_cascade(label="File", menu=file_menu)
@@ -1505,6 +1710,7 @@ class ExplorerUI(ttk.Frame):
     def load_path(self, path):
         self.monitor.set_tasks(1)
         threading.Thread(target=lambda: self._finish_load(self.logic.list_directory(path), path), daemon=True).start()
+        
     def _finish_load(self, items, path):
         if items is not None:
             self.current_path = path; self.path_var.set(path); self._populate_tree(items)
@@ -1517,7 +1723,12 @@ class ExplorerUI(ttk.Frame):
                 total_size_str = self.logic._format_size(raw_size)
             except: pass
             
-            self.ops_hud.update_data(path, len(items), total_size_str)
+            # REASON: THREAD SAFETY FIX. 
+            # The background loader thread cannot touch the UI directly or it crashes Tkinter.
+            # We use self.after(0, ...) to schedule the update on the main thread.
+            
+            # OLD CODE: self.ops_hud.update_data(path, len(items), total_size_str)
+            self.after(0, lambda: self.ops_hud.update_data(path, len(items), total_size_str))
             
         self.monitor.set_tasks(0)
 

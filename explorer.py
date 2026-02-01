@@ -1037,10 +1037,12 @@ class GitHandler:
 
 class OpsHUD(tk.Canvas):
     """
-    REASON: Updated with Auto-Scaling Text and Scrollable Commit Log.
-    Uses 'create_window' to embed a Listbox inside the retro canvas.
+    REASON: UPDATED HUD.
+    - precise text measuring (no more guessing)
+    - 10px internal margins
+    - robust scrolling commit log
     """
-    def __init__(self, parent, git_handler, width=220, height=500): # REASON: Increased height for logs
+    def __init__(self, parent, git_handler, width=220, height=500):
         super().__init__(parent, width=width, height=height, bg="#001100", highlightthickness=0)
         self.git = git_handler
         self.current_path = None
@@ -1048,12 +1050,10 @@ class OpsHUD(tk.Canvas):
         self.stats = {}
         self.commits = []
         
-        # Base Fonts
-        self.base_font_size = 11
+        self.base_font_size = 12
         self.font_family = "Courier"
         
-        # REASON: Embedded Listbox for Commits (Retro Style)
-        # We set border=0 to blend it perfectly into the HUD
+        # Embedded Listbox for Commits
         self.lb_commits = tk.Listbox(
             self, bg="#001100", fg="#00ff00", 
             font=("Courier", 9), bd=0, highlightthickness=0,
@@ -1068,10 +1068,10 @@ class OpsHUD(tk.Canvas):
         # 1. Standard Stats
         git_dat = self.git.get_status(path)
         
-        # 2. REASON: Fetch Commits for the new list
+        # 2. Commits
         self.commits = self.git.get_commit_log(path)
         
-        # 3. Heuristics
+        # 3. Heuristics (Quick Scan)
         todo_count = 0
         try:
             scanned = 0
@@ -1099,20 +1099,20 @@ class OpsHUD(tk.Canvas):
 
     def _get_adaptive_font(self, text, max_width, is_bold=False):
         """
-        REASON: Auto-adjust size of text so there is 2px invisible padding.
-        Shrinks font size until the text fits within (max_width - 4).
+        REASON: PRECISE SCALING.
+        Uses tkfont.measure to ensure text fits exactly within max_width.
         """
         size = self.base_font_size if not is_bold else 13
-        min_size = 8
+        min_size = 6 # Allow smaller text for long paths
         weight = "bold" if is_bold else "normal"
         
-        # Simple heuristic scaling for Courier (Monospace)
-        # Char width is approx 0.6 * size
-        estimated_width = 0.6 * size * len(text)
+        # Create a font object to measure real width
+        f = tkfont.Font(family=self.font_family, size=size, weight=weight)
         
-        while estimated_width > (max_width - 4) and size > min_size:
+        # Shrink until it fits
+        while f.measure(text) > max_width and size > min_size:
             size -= 1
-            estimated_width = 0.6 * size * len(text)
+            f.configure(size=size)
             
         return (self.font_family, size, weight)
 
@@ -1120,56 +1120,52 @@ class OpsHUD(tk.Canvas):
         self.delete("all")
         w, h = int(self['width']), int(self['height'])
         
+        # REASON: Define Safe Zone (10px padding on sides)
+        safe_w = w - 20 
+        
         # Grid Lines
         self.create_line(10, 30, w-10, 30, fill="#004400", width=1)
         self.create_line(10, 100, w-10, 100, fill="#004400", width=1)
-        self.create_line(10, 170, w-10, 170, fill="#004400", width=1) # Separator for logs
+        self.create_line(10, 170, w-10, 170, fill="#004400", width=1)
 
         if not self.stats:
-            self._text(w/2, h/2, "SYSTEM OFFLINE", "#00ff00", center=True)
+            self._text(w/2, 30, "SYSTEM OFFLINE", "#00ff00", safe_w, center=True)
             return
 
         # 1. SECTOR VITALS
-        self._text(10, 10, "SECTOR VITALS", "#00ff00", is_bold=True)
-        self._text(10, 25, f"MASS: {self.stats['size']}", "#33cc33")
-        self._text(w/2 + 5, 25, f"UNITS: {self.stats['files']}", "#33cc33")
+        self._text(10, 10, "SECTOR VITALS", "#00ff00", safe_w, is_bold=True)
+        self._text(10, 25, f"MASS: {self.stats['size']}", "#33cc33", safe_w/2)
+        self._text(w/2, 25, f"UNITS: {self.stats['files']}", "#33cc33", safe_w/2)
 
         # 2. GIT TELEMETRY
         color_flux = "#ff3333" if int(self.stats.get('flux', 0)) > 0 else "#33cc33"
-        self._text(10, 45, f"BRANCH: {self.stats['branch']}", "#00ff00")
-        self._text(10, 60, f"FLUX: {self.stats['flux']} Pending", color_flux)
-        self._text(10, 75, f"LAST: {self.stats['author']}", "#33cc33")
+        self._text(10, 45, f"BRANCH: {self.stats['branch']}", "#00ff00", safe_w)
+        self._text(10, 60, f"FLUX: {self.stats['flux']} Pending", color_flux, safe_w)
+        self._text(10, 75, f"LAST: {self.stats['author']}", "#33cc33", safe_w)
 
         # 3. BIO-SIGNS
-        self._text(10, 110, "CODE BIO-SIGNS", "#00ff00", is_bold=True)
-        self._text(10, 125, f"DEBT: {self.stats['todos']}", "#ffb000")
+        self._text(10, 110, "CODE BIO-SIGNS", "#00ff00", safe_w, is_bold=True)
+        self._text(10, 125, f"DEBT: {self.stats['todos']}", "#ffb000", safe_w)
         
         health = max(0, 100 - (self.stats['todos'] * 5))
-        self._text(10, 140, f"INTEGRITY: {health}%", "#33cc33")
+        self._text(10, 140, f"INTEGRITY: {health}%", "#33cc33", safe_w)
         self.create_rectangle(10, 155, 10 + (health * 1.5), 160, fill="#00ff00", outline="")
 
-        # 4. COMMIT LOGS (Scrollable List)
-        self._text(10, 180, "CRITICAL LOGS", "#00ff00", is_bold=True)
+        # 4. COMMIT LOGS
+        self._text(10, 180, "CRITICAL LOGS", "#00ff00", safe_w, is_bold=True)
         
-        # Update Listbox content
         self.lb_commits.delete(0, tk.END)
         for commit in self.commits:
-            # Hash | Msg
-            display_text = f"[{commit[0]}] {commit[2]}"
-            self.lb_commits.insert(tk.END, display_text)
+            self.lb_commits.insert(tk.END, f"[{commit[0]}] {commit[2]}")
             
-        # REASON: Place Listbox on Canvas using create_window
-        # This allows us to position it precisely within the retro display area
-        # Height is calculated to fill remaining space
         list_h = h - 210
         self.create_window(w/2, 210 + (list_h/2), window=self.lb_commits, width=w-10, height=list_h)
 
-    def _text(self, x, y, text, color, is_bold=False, center=False):
-        w = int(self['width'])
-        font = self._get_adaptive_font(text, w, is_bold)
+    def _text(self, x, y, text, color, max_width, is_bold=False, center=False):
+        # Calculate font based on the MAX WIDTH allowed for this specific line
+        font = self._get_adaptive_font(text, max_width, is_bold)
         anchor = tk.CENTER if center else tk.NW
         
-        # Glow Effect
         self.create_text(x+1, y+1, text=text, fill="#003300", font=font, anchor=anchor)
         self.create_text(x, y, text=text, fill=color, font=font, anchor=anchor)
 
@@ -1259,8 +1255,12 @@ class ExplorerUI(ttk.Frame):
 
         # 1. THE OPS-HUD (Left Side)
         # REASON: Borderless 'Pip-Boy' style display for Git/File stats
+        # 1. THE OPS-HUD (Left Side)
         self.ops_hud = OpsHUD(main_content, self.git_handler, width=220, height=400)
-        self.ops_hud.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        
+        # REASON: Added padx=10 on the left to create space from the window edge
+        # Added padx=5 on the right to separate it from the file tree
+        self.ops_hud.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 5), pady=5)
 
         # 2. EXISTING PANED WINDOW (Right Side)
         # REASON: Changed parent from 'self' to 'main_content' to sit next to the HUD

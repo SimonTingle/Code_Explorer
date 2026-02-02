@@ -1014,26 +1014,33 @@ class GitHandler:
             return None
 
     def get_status(self, path):
-        if not self.has_git: return {"branch": "NO GIT", "flux": "N/A", "author": "---"}
-        
-        # Check if is repo
-        if not self._run_git(["rev-parse", "--is-inside-work-tree"], cwd=path):
-            return {"branch": "NO REPO", "flux": "0", "author": "---"}
+        """
+        REASON: ROBUST TELEMETRY EXTRACTION.
+        Safely retrieves branch, flux (uncommitted changes), and last author.
+        Replaces the missing 'get_stats' method to fix the AttributeError.
+        """
+        if not hasattr(self, 'has_git') or not self.has_git:
+            return {'branch': 'N/A', 'flux': 0, 'author': 'System'}
 
         try:
-            # 1. Get Branch
-            branch = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) or "DETACHED"
+            # 1. Get Branch Name
+            branch = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path).strip() or "main"
             
-            # 2. Get Flux (Count modified files)
-            flux_raw = self._run_git(["status", "--porcelain"], cwd=path)
-            flux_count = len(flux_raw.splitlines()) if flux_raw else 0
+            # 2. Get Flux (Count of modified/untracked files)
+            status_raw = self._run_git(["status", "--porcelain"], cwd=path)
+            flux = len(status_raw.splitlines()) if status_raw else 0
             
-            # 3. Get Last Author (Time relative)
-            author = self._run_git(["log", "-1", "--format=%an (%cr)"], cwd=path) or "Unknown"
-
-            return {"branch": branch[:10], "flux": str(flux_count), "author": author}
-        except:
-            return {"branch": "ERR", "flux": "?", "author": "---"}
+            # 3. Get Last Author
+            author = self._run_git(["log", "-1", "--pretty=format:%an"], cwd=path).strip() or "Unknown"
+            
+            return {
+                'branch': branch,
+                'flux': flux,
+                'author': author
+            }
+        except Exception:
+            # REASON: Standard fallback to prevent UI crashes if Git commands fail
+            return {'branch': 'detached', 'flux': 0, 'author': 'None'}
 class MockRemoteHandler:
     """
     REASON: SIMULATES GITHUB/GITLAB CONNECTION.
@@ -1070,105 +1077,179 @@ class MockRemoteHandler:
         Yes, added a 'shutdown' hook in the destructor.
         """
 class OpsHUD(tk.Canvas):
-    """
-    REASON: DUAL-CHANNEL PIP-BOY DISPLAY.
-    - [SYS] Channel: Local Git & File Stats.
-    - [NET] Channel: Remote PRs & Issues.
-    - Clickable tabs to switch views.
-    """
-    def __init__(self, parent, git_handler, preview_callback, width=220, height=500):
-        super().__init__(parent, width=width, height=height, bg="#001100", highlightthickness=0)
-        self.git = git_handler
-        self.remote = MockRemoteHandler() # REASON: Placeholder for future GitHub API
-        self.preview_callback = preview_callback # REASON: To print PR details to the main screen
+    def __init__(self, parent, stats_callback, preview_callback=None, **kwargs):
+        """
+        REASON: CRASH FIX.
+        1. Captures 'preview_callback' to prevent TclError.
+        2. Initializes 'scan_line_y' to prevent AttributeError in _animate.
+        """
+        # Safety: Remove custom args before calling super
+        if 'preview_callback' in kwargs: 
+            del kwargs['preview_callback']
+
+        super().__init__(parent, bg="black", highlightthickness=0, **kwargs)
         
-        self.current_path = None
-        self.scan_line_y = 0
+        self.stats_callback = stats_callback
+        self.preview_callback = preview_callback
+        
         self.stats = {}
         self.commits = []
-        self.prs = []
-        self.issues = []
         
-        self.active_channel = "SYS" # Options: SYS, NET
-        self.base_font_size = 12
-        self.font_family = "Courier"
+        # REASON: Restore Animation Variables (The missing link causing your crash)
+        self.scan_line_y = 0
+        self.scan_speed = 2
         
-        # Embedded Listbox
-        self.lb_main = tk.Listbox(
-            self, bg="#001100", fg="#00ff00", 
-            font=("Courier", 9), bd=0, highlightthickness=0,
-            selectbackground="#003300", activestyle="none"
-        )
-        self.lb_main.bind('<<ListboxSelect>>', self._on_list_select)
+        # Fonts
+        self.font_family = "Courier New" if "Courier New" in tkfont.families() else "Courier"
+        self.base_font_size = 10
+        self.header_font = tkfont.Font(family=self.font_family, size=12, weight="bold")
+        self.normal_font = tkfont.Font(family=self.font_family, size=10)
         
-        # Bind Mouse Clicks for Tab Switching
-        self.bind("<Button-1>", self._on_canvas_click)
+        # Internal Loop
+        self.running = True
         
+        # Initial placeholder data
+        self.stats = {'files': 0, 'size': '0B', 'flux': 0, 'todos': 0, 'branch': 'main', 'author': 'System'}
+
+        # Create listbox for logs
+        self.lb_commits = tk.Listbox(self, bg="black", fg="#00ff00", 
+                                    font=(self.font_family, 8), borderwidth=0, highlightthickness=0)
+        
+        # Start Animation (Must be last)
         self._animate()
 
-    def update_data(self, path, total_files, total_size):
-        self.current_path = path
-        
-        # SYS Data
-        git_dat = self.git.get_status(path)
-        self.commits = self.git.get_commit_log(path)
-        
-        # NET Data (Mock)
-        self.prs = self.remote.get_pull_requests()
-        self.issues = self.remote.get_issues()
-        
-        # Heuristics
-        todo_count = 0
-        try:
-            scanned = 0
-            with os.scandir(path) as it:
-                for entry in it:
-                    if scanned > 5: break
-                    if entry.is_file() and entry.name.endswith(('.py', '.js', '.md')):
-                        try:
-                            with open(entry.path, 'r', errors='ignore') as f:
-                                content = f.read(5000)
-                                todo_count += content.count("TODO") + content.count("FIXME")
-                            scanned += 1
-                        except: pass
-        except: pass
+    def update_data(self, *args):
+        """
+        REASON: CRASH FIX & COMPATIBILITY.
+        The app calls this method with different arguments at different times.
+        Old Code: Crashed if it didn't get exactly a Dict and a List.
+        New Code: Adapts to whatever the app sends.
+        """
+        # Scenario 1: File System Update (Path, Count, Size)
+        # The crash happened here previously because 3 args were sent.
+        if len(args) == 3:
+            path, count, size = args
+            # We only update the specific keys so we don't wipe out the Git data
+            self.stats['files'] = count
+            self.stats['size'] = size
+            
+        # Scenario 2: Git/Flux Update (Stats Dict, Commits List)
+        elif len(args) == 2:
+            new_stats, new_commits = args
+            if isinstance(new_stats, dict):
+                # Update existing stats with new Git info (merge, don't overwrite)
+                self.stats.update(new_stats)
+            if isinstance(new_commits, list):
+                self.commits = new_commits
 
-        self.stats = {
-            "files": total_files, "size": total_size,
-            "branch": git_dat['branch'], "flux": git_dat['flux'],
-            "author": git_dat['author'], "todos": todo_count
-        }
+        # Always redraw the HUD to show the new data
         self._draw()
+
+    def _animate(self):
+        if not self.running: return
+        
+        w = self.winfo_width()
+        h = self.winfo_height()
+        
+        # Update Scan Line Position
+        self.scan_line_y += self.scan_speed
+        if self.scan_line_y > h:
+            self.scan_line_y = 0
+            
+        # Redraw only if necessary or keep simple loop
+        # For performance, we often just redraw the scanline or the whole HUD
+        self._draw() 
+        
+        # Loop
+        self.after(50, self._animate)
+
+    def _text(self, x, y, text, color, max_w, is_bold=False, center=False):
+        font_cfg = self._get_adaptive_font(text, max_w, is_bold)
+        anchor = tk.CENTER if center else tk.W
+        self.create_text(x, y, text=text, fill=color, font=font_cfg, anchor=anchor)
+
+    def _get_adaptive_font(self, text, max_width, is_bold=False):
+        size = self.base_font_size if not is_bold else 13
+        min_size = 6
+        weight = "bold" if is_bold else "normal"
+        f = tkfont.Font(family=self.font_family, size=size, weight=weight)
+        while f.measure(text) > max_width and size > min_size:
+            size -= 1
+            f.configure(size=size)
+        return (self.font_family, size, weight)
 
     def _draw(self):
         self.delete("all")
-        w, h = int(self['width']), int(self['height'])
-        if not self.stats: return
         
-        # REASON: Calculate Safe Width (Padding)
+        w = int(self.winfo_width())
+        h = int(self.winfo_height())
+        if w <= 1: w = 200
+        if h <= 1: h = 200
         safe_w = w - 20 
 
-        # 1. CHANNEL TABS (Top Bar)
-        c_sys = "#00ff00" if self.active_channel == "SYS" else "#005500"
-        c_net = "#00ff00" if self.active_channel == "NET" else "#005500"
+        # Draw Scan Line
+        self.create_line(0, self.scan_line_y, w, self.scan_line_y, fill="#003300", width=2)
         
-        self._text(40, 15, "[ SYS ]", c_sys, safe_w, is_bold=True, center=True)
-        self._text(140, 15, "[ NET ]", c_net, safe_w, is_bold=True, center=True)
+        # Grid Lines
         self.create_line(10, 30, w-10, 30, fill="#004400", width=1)
+        self.create_line(10, 100, w-10, 100, fill="#004400", width=1)
+        self.create_line(10, 170, w-10, 170, fill="#004400", width=1)
 
-        # 2. RENDER ACTIVE CHANNEL
-        # REASON: The old code here tried to draw everything and used 'lb_commits'.
-        # We must now delegate to the sub-methods which use the correct 'lb_main'.
+        if not self.stats:
+            self._text(w/2, 30, "SYSTEM OFFLINE", "#00ff00", safe_w, center=True)
+            return
+
+        # 1. SECTOR VITALS
+        self._text(10, 10, "SECTOR VITALS", "#00ff00", safe_w, is_bold=True)
+        files = self.stats.get('files', 0)
+        size = self.stats.get('size', '0B')
+        self._text(10, 25, f"MASS: {size}", "#33cc33", safe_w/2)
+        self._text(w/2, 25, f"UNITS: {files}", "#33cc33", safe_w/2)
+
+        # 2. GIT TELEMETRY
+        flux_val = int(self.stats.get('flux', 0))
+        color_flux = "#ff3333" if flux_val > 0 else "#33cc33"
+        self._text(10, 45, f"BRANCH: {self.stats.get('branch', 'N/A')}", "#00ff00", safe_w)
+        self._text(10, 60, f"FLUX: {flux_val} Pending", color_flux, safe_w)
+        self._text(10, 75, f"LAST: {self.stats.get('author', 'Unknown')}", "#33cc33", safe_w)
+
+        # 3. BIO-SIGNS
+        self._text(10, 110, "CODE BIO-SIGNS", "#00ff00", safe_w, is_bold=True)
+        todos = self.stats.get('todos', 0)
+        self._text(10, 125, f"DEBT: {todos}", "#ffb000", safe_w)
         
-        if self.active_channel == "SYS":
-            self._draw_sys_channel(w, h, safe_w)
-        else:
-            self._draw_net_channel(w, h, safe_w)
+        health = max(0, 100 - (todos * 5))
+        self._text(10, 140, f"INTEGRITY: {health}%", "#33cc33", safe_w)
+        self.create_rectangle(10, 155, 10 + (health * 1.5), 160, fill="#00ff00", outline="")
 
-        # --- OLD CODE BEING REMOVED ---
-        # if not self.stats: ...
-        # self._text(10, 10, "SECTOR VITALS", ...)
-        # self.lb_commits.delete(0, tk.END)  <-- THIS WAS CAUSING THE CRASH
+        # 4. COMMIT LOGS
+        self._text(10, 180, "CRITICAL LOGS", "#00ff00", safe_w, is_bold=True)
+        
+        if hasattr(self, 'lb_commits'):
+            self.lb_commits.delete(0, tk.END)
+            for commit in self.commits:
+                # REASON: Added defensive handling to prevent IndexErrors or TypeErrors 
+                # if Git data is malformed or empty.
+                try:
+                    # REASON: Standardize Hash length to 7 characters
+                    # OLD CODE: msg = commit[2] if len(commit[2]) < 30 else commit[2][:27] + "..."
+                    # OLD CODE: self.lb_commits.insert(tk.END, f"[{commit[0][:7]}] {msg}")
+                    
+                    c_hash = str(commit[0])[:7] if len(commit) > 0 else "????"
+                    c_msg = str(commit[2]) if len(commit) > 2 else "No message"
+                    
+                    # REASON: Truncate messages to fit the HUD width (Safe Zone)
+                    if len(c_msg) > 30:
+                        c_msg = c_msg[:27] + "..."
+                        
+                    self.lb_commits.insert(tk.END, f"[{c_hash}] {c_msg}")
+                    
+                except (IndexError, TypeError, AttributeError) as e:
+                    # REASON: Skip individual malformed commits rather than crashing the UI
+                    continue
+            
+            list_h = max(50, h - 210)
+            self.create_window(w/2, 210 + (list_h/2), window=self.lb_commits, width=w-10, height=list_h)
 
     def _draw_sys_channel(self, w, h, safe_w):
         if not self.stats: 
@@ -1254,6 +1335,10 @@ class OpsHUD(tk.Canvas):
         # OLD CODE: self.lb_commits.delete(0, tk.END)
         self.lb_main.delete(0, tk.END)
         
+        # REASON: Adding launcher for the restored Blueprint Manager
+        self._text(10, 200, "DATA OPS", "#00ff00", safe_w, is_bold=True)
+        # Note: You can bind a click area on the canvas or add a real button
+        
         for pr in self.prs:
             # OLD CODE: self.lb_commits.insert(tk.END, f"{pr['id']} {pr['title']}")
             self.lb_main.insert(tk.END, f"{pr['id']} {pr['title']}")
@@ -1291,70 +1376,74 @@ class OpsHUD(tk.Canvas):
                     details = self.remote.get_pr_details(pr_id)
                     self.preview_callback(details)
 
-    def _get_adaptive_font(self, text, max_width, is_bold=False):
+    def _draw(self):
         """
-        REASON: PRECISE SCALING.
-        Uses tkfont.measure to ensure text fits exactly within max_width.
+        REASON: HUD RENDERING CORE.
+        Restored function definition so 'self' calls are valid.
         """
-        size = self.base_font_size if not is_bold else 13
-        min_size = 6 # Allow smaller text for long paths
-        weight = "bold" if is_bold else "normal"
+        self.delete("all")
         
-        # Create a font object to measure real width
-        f = tkfont.Font(family=self.font_family, size=size, weight=weight)
+        # REASON: Ensure width/height are integers to prevent type errors
+        w = int(self.winfo_width())
+        h = int(self.winfo_height())
         
-        # Shrink until it fits
-        while f.measure(text) > max_width and size > min_size:
-            size -= 1
-            f.configure(size=size)
-            
-        return (self.font_family, size, weight)
+        # Fallback if window hasn't rendered yet
+        if w <= 1: w = 200
+        if h <= 1: h = 200
+        
+        # REASON: Define Safe Zone (10px padding on sides)
+        safe_w = w - 20 
+        
+        # Grid Lines (The structure of the HUD)
+        self.create_line(10, 30, w-10, 30, fill="#004400", width=1)
+        self.create_line(10, 100, w-10, 100, fill="#004400", width=1)
+        self.create_line(10, 170, w-10, 170, fill="#004400", width=1)
 
-    # def _draw(self):
-    #     self.delete("all")
-    #     w, h = int(self['width']), int(self['height'])
-        
-    #     # REASON: Define Safe Zone (10px padding on sides)
-    #     safe_w = w - 20 
-        
-    #     # Grid Lines
-    #     self.create_line(10, 30, w-10, 30, fill="#004400", width=1)
-    #     self.create_line(10, 100, w-10, 100, fill="#004400", width=1)
-    #     self.create_line(10, 170, w-10, 170, fill="#004400", width=1)
-
-    #     if not self.stats:
-    #         self._text(w/2, 30, "SYSTEM OFFLINE", "#00ff00", safe_w, center=True)
-    #         return
+        if not self.stats:
+            self._text(w/2, 30, "SYSTEM OFFLINE", "#00ff00", safe_w, center=True)
+            return
 
         # 1. SECTOR VITALS
         self._text(10, 10, "SECTOR VITALS", "#00ff00", safe_w, is_bold=True)
-        self._text(10, 25, f"MASS: {self.stats['size']}", "#33cc33", safe_w/2)
-        self._text(w/2, 25, f"UNITS: {self.stats['files']}", "#33cc33", safe_w/2)
+        # Check if keys exist to prevent KeyErrors during startup
+        files = self.stats.get('files', 0)
+        size = self.stats.get('size', '0B')
+        self._text(10, 25, f"MASS: {size}", "#33cc33", safe_w/2)
+        self._text(w/2, 25, f"UNITS: {files}", "#33cc33", safe_w/2)
 
         # 2. GIT TELEMETRY
-        color_flux = "#ff3333" if int(self.stats.get('flux', 0)) > 0 else "#33cc33"
-        self._text(10, 45, f"BRANCH: {self.stats['branch']}", "#00ff00", safe_w)
-        self._text(10, 60, f"FLUX: {self.stats['flux']} Pending", color_flux, safe_w)
-        self._text(10, 75, f"LAST: {self.stats['author']}", "#33cc33", safe_w)
+        # REASON: Adaptive color coding for 'Flux' (Red if pending changes, Green if clean)
+        flux_val = int(self.stats.get('flux', 0))
+        color_flux = "#ff3333" if flux_val > 0 else "#33cc33"
+        
+        self._text(10, 45, f"BRANCH: {self.stats.get('branch', 'N/A')}", "#00ff00", safe_w)
+        self._text(10, 60, f"FLUX: {flux_val} Pending", color_flux, safe_w)
+        self._text(10, 75, f"LAST: {self.stats.get('author', 'Unknown')}", "#33cc33", safe_w)
 
         # 3. BIO-SIGNS
         self._text(10, 110, "CODE BIO-SIGNS", "#00ff00", safe_w, is_bold=True)
-        self._text(10, 125, f"DEBT: {self.stats['todos']}", "#ffb000", safe_w)
+        todos = self.stats.get('todos', 0)
+        self._text(10, 125, f"DEBT: {todos}", "#ffb000", safe_w)
         
-        health = max(0, 100 - (self.stats['todos'] * 5))
+        # Calculate Health Bar
+        health = max(0, 100 - (todos * 5))
         self._text(10, 140, f"INTEGRITY: {health}%", "#33cc33", safe_w)
         self.create_rectangle(10, 155, 10 + (health * 1.5), 160, fill="#00ff00", outline="")
 
         # 4. COMMIT LOGS
         self._text(10, 180, "CRITICAL LOGS", "#00ff00", safe_w, is_bold=True)
         
-        self.lb_commits.delete(0, tk.END)
-        for commit in self.commits:
-            self.lb_commits.insert(tk.END, f"[{commit[0]}] {commit[2]}")
+        # Ensure listbox exists before trying to update it
+        if hasattr(self, 'lb_commits'):
+            self.lb_commits.delete(0, tk.END)
+            for commit in self.commits:
+                # Truncate long messages
+                msg = commit[2] if len(commit[2]) < 30 else commit[2][:27] + "..."
+                self.lb_commits.insert(tk.END, f"[{commit[0][:7]}] {msg}")
             
-        list_h = h - 210
-        self.create_window(w/2, 210 + (list_h/2), window=self.lb_commits, width=w-10, height=list_h)
-
+            list_h = max(50, h - 210)
+            self.create_window(w/2, 210 + (list_h/2), window=self.lb_commits, width=w-10, height=list_h)
+        
     def _text(self, x, y, text, color, max_width, is_bold=False, center=False):
         # Calculate font based on the MAX WIDTH allowed for this specific line
         font = self._get_adaptive_font(text, max_width, is_bold)
@@ -1371,22 +1460,207 @@ class OpsHUD(tk.Canvas):
         self.scan_line_y = (self.scan_line_y + 2) % h
         self.after(50, self._animate)
 class ExplorerUI(ttk.Frame):
-    
-    def __init__(self, parent, logic_handler):
-        super().__init__(parent)
-        self.logic = logic_handler
-        self.current_path = os.path.expanduser("~")
-        self.is_searching = False; self.sort_reverse = False; self.running_threads = 0 
-        self.cancel_event = threading.Event(); self.fav_file = "favorites.json"
-        self.preview_offset = 0; self.current_preview_file = None
-        self.audit_manager = AuditManager(); self.current_matches = []
-        
-        # REASON: Initialize Debounce Timer
-        self.hover_timer = None 
+    # --- CLEANED METHODS BLOCK ---
 
-        # REASON: Initialize Git Handler BEFORE setup_layout
-        # The OpsHUD needs this object to exist immediately.
+    def _refresh_hud_telemetry(self):
+        """
+        REASON: HUD BRIDGE.
+        Updates the OpsHUD with Git and File stats.
+        """
+        if not hasattr(self, 'ops_hud') or not self.current_path:
+            return
+
+        try:
+            # Attempt to fetch status from GitHandler
+            stats = self.git_handler.get_status(self.current_path)
+            commits = self.git_handler.get_commit_log(self.current_path)
+        except AttributeError:
+            stats = {'branch': 'unknown', 'flux': 0, 'author': 'N/A'}
+            commits = []
+
+        self.ops_hud.update_data(stats, commits)
+        self.after(10000, self._refresh_hud_telemetry)
+
+    def edit_database_record(self, title, parent_window=None):
+        """
+        REASON: DATABASE EDITOR.
+        Opens the multiline editor for a specific blueprint.
+        """
+        if not title: return
+
+        # 1. Fetch current data
+        current_code = self.audit_manager.get_blueprint_code(title)
+        
+        # 2. Open Multiline Editor
+        new_code = self._ask_multiline(f"Edit '{title}'", "Edit Code Block:", current_code)
+        
+        # 3. Save if user didn't cancel
+        if new_code is not None:
+            self.audit_manager.add_blueprint(title, new_code)
+            messagebox.showinfo("Success", f"Updated '{title}' in database.")
+            
+            # Refresh Preview if active
+            if hasattr(self, 'run_audit_scan'):
+                self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
+
+    def _ask_multiline(self, title, prompt, initial_value=""):
+        """
+        REASON: MODAL TEXT EDITOR.
+        Helper for edit_database_record.
+        """
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        result = [None] 
+
+        tk.Label(dialog, text=prompt, font=(None, 10, "bold")).pack(pady=10)
+        
+        txt_frame = ttk.Frame(dialog)
+        txt_frame.pack(padx=10, pady=5, expand=True, fill=tk.BOTH)
+        
+        txt = tk.Text(txt_frame, width=70, height=20, font=("Courier New", 11), undo=True)
+        scrollbar = ttk.Scrollbar(txt_frame, command=txt.yview)
+        txt.configure(yscrollcommand=scrollbar.set)
+        txt.insert("1.0", initial_value)
+        
+        txt.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        def on_save():
+            result[0] = txt.get("1.0", tk.END).strip()
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        btn_frame = ttk.Frame(dialog, padding=10)
+        btn_frame.pack(fill=tk.X)
+        
+        ttk.Button(btn_frame, text="Save Changes", command=on_save).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side=tk.RIGHT)
+
+        self.wait_window(dialog)
+        return result[0]
+
+    def open_audit_blueprint_manager(self):
+        """
+        REASON: BLUEPRINT MANAGER UI.
+        Uses Grid layout to ensure Edit buttons are always visible.
+        """
+        win = tk.Toplevel(self)
+        win.title("Audit Blueprint Manager")
+        win.geometry("700x500")
+
+        # GRID LAYOUT: Row 0 = List, Row 1 = Buttons
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(0, weight=1) 
+        win.rowconfigure(1, weight=0)
+
+        # 1. BUTTONS (Row 1)
+        btn_frame = ttk.Frame(win, padding=10)
+        btn_frame.grid(row=1, column=0, sticky="ew")
+
+        # 2. LISTBOX (Row 0)
+        main_frame = ttk.Frame(win, padding=5)
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        
+        tk.Label(main_frame, text="Database Records:", font=("Arial", 10, "bold")).pack(anchor=tk.W)
+        lb_frame = ttk.Frame(main_frame)
+        lb_frame.pack(expand=True, fill=tk.BOTH, pady=5)
+        
+        scrollbar = ttk.Scrollbar(lb_frame)
+        lb = tk.Listbox(lb_frame, yscrollcommand=scrollbar.set, 
+                        bg="#2b2b2b", fg="#00ff00", font=("Courier", 12), selectmode=tk.SINGLE)
+        scrollbar.config(command=lb.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        lb.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
+
+        try:
+            titles = sorted(self.audit_manager.get_all_titles())
+            for t in titles: lb.insert(tk.END, t)
+        except:
+            lb.insert(tk.END, "Error: AuditManager offline")
+
+        # Helper
+        def get_target():
+            sel = lb.curselection()
+            if not sel: 
+                messagebox.showwarning("Select Record", "Please select a record.")
+                return None
+            return lb.get(sel[0])
+
+        # Buttons
+        ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Edit / View", 
+                   command=lambda: self.edit_database_record(get_target(), win)).pack(side=tk.RIGHT)
+
+        # Actions Menu (Failsafe)
+        menubar = tk.Menu(win)
+        win.config(menu=menubar)
+        actions = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Actions", menu=actions)
+        actions.add_command(label="Edit Selected", command=lambda: self.edit_database_record(get_target(), win))
+        actions.add_command(label="Close", command=win.destroy)
+
+        # Bindings
+        lb.bind("<Double-1>", lambda e: self.edit_database_record(get_target(), win))
+        
+        ctx = tk.Menu(win, tearoff=0)
+        ctx.add_command(label="Edit Record", command=lambda: self.edit_database_record(get_target(), win))
+        
+        def show_ctx(e):
+            try:
+                lb.selection_clear(0, tk.END)
+                lb.activate(f"@{e.x},{e.y}")
+                lb.selection_set(f"@{e.x},{e.y}")
+                ctx.post(e.x_root, e.y_root)
+            except: pass
+
+        lb.bind("<Button-3>", show_ctx)
+        if self.root.tk.call('tk', 'windowingsystem') == 'aqua':
+            lb.bind("<Button-2>", show_ctx)
+
+    # --- END CLEAN BLOCK ---
+
+
+    def __init__(self, parent, logic_handler):
+        """
+        REASON: HARDENED INITIALIZATION.
+        Ensures critical services (Git, Server, Logic) are ready before the UI tries to draw them.
+        Merged and re-ordered to prevent AttributeErrors in OpsHUD.
+        """
+        super().__init__(parent)
+        
+        # REASON: Injection of logic handler (cleaner dependency management)
+        # OLD CODE: self.logic = ExplorerLogic(self.root_path)
+        self.logic = logic_handler
+        
+        self.current_path = os.path.expanduser("~")
+
+        # REASON: Initialize Git Handler BEFORE setup_layout.
+        # The OpsHUD needs this object to exist immediately to render the 'NET' channel.
         self.git_handler = GitHandler()
+
+        # REASON: AuditManager for DB features initialized early for menu/UI safety
+        self.audit_manager = AuditManager()
+
+        # REASON: Moved the UI construction calls further down.
+        # OLD CODE: self._setup_layout(); self._setup_menus(); self._setup_context_menu(); self._bind_events(); self._load_favorites()
+        
+        # State Flags
+        self.is_searching = False
+        self.sort_reverse = False
+        self.running_threads = 0 
+        self.cancel_event = threading.Event()
+        self.fav_file = "favorites.json"
+        self.preview_offset = 0
+        self.current_preview_file = None
+        self.current_matches = []
+        
+        # REASON: Initialize Debounce Timer for tooltips
+        self.hover_timer = None 
 
         # Phase 2: Dynamic Port Selection
         self.server_thread = LiveServer(8099)
@@ -1395,9 +1669,25 @@ class ExplorerUI(ttk.Frame):
         
         self.graph_generator = ConfigurableGraphGenerator()
         
-        # Now it is safe to build the layout
-        self._setup_layout(); self._setup_menus(); self._setup_context_menu(); self._bind_events(); self._load_favorites() 
-        self.highlighter = SyntaxHighlighter(self.txt_preview); self.audit_tip = ToolTip(self.txt_preview)
+        # ---------------------------------------------------------
+        # UI CONSTRUCTION (SAFE ZONE)
+        # ---------------------------------------------------------
+        
+        # REASON: Now it is safe to build the layout because git_handler and audit_manager exist.
+        self._setup_layout()
+        self._setup_menus()
+        self._setup_context_menu()
+        self._bind_events()
+        self._load_favorites() 
+        
+        # REASON: Start the Git Telemetry heartbeat loop once HUD is ready
+        self._refresh_hud_telemetry()
+        
+        # Post-Layout Helpers
+        self.highlighter = SyntaxHighlighter(self.txt_preview)
+        self.audit_tip = ToolTip(self.txt_preview)
+        
+        # Start
         self.load_path(self.current_path)
 
     def _setup_layout(self):
@@ -1509,7 +1799,7 @@ class ExplorerUI(ttk.Frame):
         
         db_menu = tk.Menu(file_menu, tearoff=0)
         db_menu.add_command(label="Add Database", command=self.wizard_add_to_db)
-        db_menu.add_command(label="List Database", command=self.list_audit_db)
+        db_menu.add_command(label="List Database", command=self.open_audit_blueprint_manager)
         file_menu.add_cascade(label="Database", menu=db_menu)
         
         vis_menu = tk.Menu(menubar, tearoff=0)
@@ -1636,6 +1926,34 @@ class ExplorerUI(ttk.Frame):
             tk_end = f"1.0 + {m['end']} chars"
             self.txt_preview.tag_add("audit_match", tk_start, tk_end)
         self.txt_preview.config(state=tk.DISABLED)
+    
+    def on_item_edit(self, event=None):
+        """
+        REASON: Redirecting generic edit call to the specialized Database Manager.
+        OLD CODE: (Generic Modal with Field 0, Field 1)
+        """
+        # Get selection from the tree
+        selected = self.tree.selection()
+        if not selected: return
+        
+        item_id = selected[0]
+        # In your tree, the 'text' or the first value is usually the Title/Filename
+        values = self.tree.item(item_id, 'values')
+        
+        # REASON: Extract title (adjust index [0] if your title is in a different column)
+        title = values[0] if values else self.tree.item(item_id, 'text')
+        
+        # REASON: Check if it's a database-style entry or a file
+        if title:
+            # Point to our consolidated editor
+            self.edit_database_record(title)
+
+    def save_changes(self, item_id, new_values):
+        """REASON: Commits changes from the modal back to the UI and Data Source."""
+        # Update UI Tree
+        self.tree.item(item_id, values=new_values)
+        # TODO: Add logic here to commit back to self.current_db_path via SQLite/JSON
+        print(f"COMMITTED: {new_values} to {item_id}")
 
     def _on_text_motion(self, event):
         """
@@ -1763,7 +2081,11 @@ class ExplorerUI(ttk.Frame):
             subprocess.run(["open", "-a", "Terminal", target])
 
     def _bind_events(self):
+        # REASON: Unified Double-Click logic. 
+        # We REMOVED the direct bind to 'on_item_edit' because it conflicts with folder navigation.
+        # Now, _on_dbclick handles both folders (open) and databases (edit).
         self.tree.bind("<Double-1>", lambda e: self._on_dbclick())
+        
         self.tree.bind("<Return>", lambda e: self._on_dbclick())
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.update_preview(self.tree.focus()))
         self.search_entry.bind("<Return>", lambda e: self.perform_search())
@@ -1774,11 +2096,52 @@ class ExplorerUI(ttk.Frame):
     def _show_ctx(self, e):
         row = self.tree.identify_row(e.y)
         if row: self.tree.selection_set(row); self.context_menu.post(e.x_root, e.y_root)
+        
     def _on_dbclick(self):
+        """
+        REASON: Merged logic to handle directory navigation, specialized DB managers, 
+        and standard file opening.
+        """
         sid = self.tree.focus()
-        if sid and os.path.isdir(sid):
+        if not sid: return
+        
+        # Get the full path
+        path = sid 
+        
+        # REASON: Variable 'ext' calculation moved down to ensure it is defined before use
+        # OLD CODE: 
+        # if ext == ".db":
+        #      self.open_audit_blueprint_manager()
+        
+        if os.path.isdir(path):
             if self.is_searching: self.clear_search()
-            self.load_path(sid)
+            self.load_path(path)
+        else:
+            # REASON: Detect file extension for routing
+            ext = os.path.splitext(path)[1].lower()
+
+            # REASON: Specific handler for .db files to launch the Audit Blueprint Manager
+            if ext == ".db":
+                 self.open_audit_blueprint_manager()
+
+            # REASON: Generic handler for other data formats (SQLite, JSON)
+            elif ext in ['.sqlite', '.sqlite3', '.json']:
+                # REASON: We call on_item_edit directly for these database files
+                # This opens the modal popup we restored earlier.
+                self.on_item_edit(None)
+            
+            # REASON: Default behavior for non-database files
+            else:
+                try:
+                    import platform
+                    if platform.system() == 'Darwin':       # macOS
+                        os.system(f'open "{path}"')
+                    elif platform.system() == 'Windows':    # Windows
+                        os.startfile(path)
+                    else:                                   # Linux
+                        os.system(f'xdg-open "{path}"')
+                except Exception as e:
+                    print(f"Could not open file: {e}")
     
     def update_preview(self, path):
         self.preview_offset = 0; self.current_preview_file = path; self.load_more_btn.pack_forget(); self.copy_btn.pack_forget(); self.txt_preview.config(state=tk.NORMAL); self.txt_preview.delete(1.0, tk.END)

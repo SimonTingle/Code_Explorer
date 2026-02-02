@@ -1619,7 +1619,7 @@ class ExplorerUI(ttk.Frame):
             except: pass
 
         lb.bind("<Button-3>", show_ctx)
-        if self.root.tk.call('tk', 'windowingsystem') == 'aqua':
+        if self.tk.call('tk', 'windowingsystem') == 'aqua':
             lb.bind("<Button-2>", show_ctx)
 
     # --- END CLEAN BLOCK ---

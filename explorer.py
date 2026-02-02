@@ -18,12 +18,22 @@ from concurrent.futures import ThreadPoolExecutor
 # --- MISSING IMPORTS ADDED BELOW ---
 import http.server
 import socketserver 
+# import pyvirtualdisplay
 # -----------------------------------
 
+# Check if we are running on Render (which defines PORT or other env vars)
+# if os.environ.get('RENDER'):
+#     from pyvirtualdisplay import Display
+#     # Start a virtual screen in the background
+#     display = Display(visible=0, size=(1024, 768))
+#     display.start()
+    
 try:
     import psutil
 except ImportError:
     psutil = None
+    
+
 
 class ToolTip:
     def __init__(self, widget, text=""):
@@ -942,6 +952,11 @@ class LiveServer(threading.Thread):
         self.actual_port = None # Will store the successfully bound port
         self.httpd = None
         self.root_dir = os.path.dirname(os.path.abspath(__file__))
+                        # REASON: RENDER PORT BINDING.
+        # On Render, we MUST listen on the port provided by the environment.
+        render_port = int(os.environ.get("PORT", 8099)) 
+        self.server_thread = LiveServer(render_port)
+        self.server_thread.start()
 
         # REASON: Loop through a range of ports to avoid "Address already in use" crashes.
         # This makes the server "Indestructible" on restart.

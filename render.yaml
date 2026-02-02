@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: code-explorer
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: ./run.sh
+    envVars:
+      - key: RENDER
+        value: true
+      - key: PYTHON_VERSION
+        value: 3.9.13
+      - key: PORT
+        value: 10000

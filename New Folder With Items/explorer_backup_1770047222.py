@@ -18,22 +18,12 @@ from concurrent.futures import ThreadPoolExecutor
 # --- MISSING IMPORTS ADDED BELOW ---
 import http.server
 import socketserver 
-# import pyvirtualdisplay
 # -----------------------------------
 
-# Check if we are running on Render (which defines PORT or other env vars)
-# if os.environ.get('RENDER'):
-#     from pyvirtualdisplay import Display
-#     # Start a virtual screen in the background
-#     display = Display(visible=0, size=(1024, 768))
-#     display.start()
-    
 try:
     import psutil
 except ImportError:
     psutil = None
-    
-
 
 class ToolTip:
     def __init__(self, widget, text=""):
@@ -952,11 +942,6 @@ class LiveServer(threading.Thread):
         self.actual_port = None # Will store the successfully bound port
         self.httpd = None
         self.root_dir = os.path.dirname(os.path.abspath(__file__))
-                        # REASON: RENDER PORT BINDING.
-        # On Render, we MUST listen on the port provided by the environment.
-        # render_port = int(os.environ.get("PORT", 8099)) 
-        # self.server_thread = LiveServer(render_port)
-        # self.server_thread.start()
 
         # REASON: Loop through a range of ports to avoid "Address already in use" crashes.
         # This makes the server "Indestructible" on restart.
@@ -970,12 +955,8 @@ class LiveServer(threading.Thread):
                         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
                         super().end_headers()
                 
-                # socketserver.TCPServer.allow_reuse_address = True
-                # self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler)
                 socketserver.TCPServer.allow_reuse_address = True
-                # REASON: LAN ACCESS. 
-                # Changing "127.0.0.1" to "0.0.0.0" allows other devices on the WiFi to connect.
-                self.httpd = socketserver.ThreadingTCPServer(("0.0.0.0", port), Handler)
+                self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler)
                 
                 # If we reach here, the bind was successful
                 self.actual_port = port
@@ -1479,31 +1460,39 @@ class OpsHUD(tk.Canvas):
         self.scan_line_y = (self.scan_line_y + 2) % h
         self.after(50, self._animate)
 class ExplorerUI(ttk.Frame):
-    # --- CLEANED METHODS BLOCK ---
-
+    
     def _refresh_hud_telemetry(self):
         """
-        REASON: HUD BRIDGE.
-        Updates the OpsHUD with Git and File stats.
+        REASON: DATA BRIDGE ALIGNMENT.
+        Fixed AttributeError by calling 'get_status' (or extracting data manually) 
+        instead of the non-existent 'get_stats'.
         """
         if not hasattr(self, 'ops_hud') or not self.current_path:
             return
 
+        # 1. Fetch data from the Git engine
+        # REASON: The error suggested 'get_status' exists. We wrap this in a try block 
+        # to ensure the heartbeat never kills the main app if a command fails.
         try:
-            # Attempt to fetch status from GitHandler
+            # Check if your GitHandler uses 'get_status' or 'get_git_stats'
+            # Based on the error, it's likely 'get_status'
             stats = self.git_handler.get_status(self.current_path)
             commits = self.git_handler.get_commit_log(self.current_path)
         except AttributeError:
+            # REASON: Fallback if neither exists, preventing the app from crashing on start
             stats = {'branch': 'unknown', 'flux': 0, 'author': 'N/A'}
             commits = []
 
+        # 2. Push to the HUD
         self.ops_hud.update_data(stats, commits)
-        self.after(10000, self._refresh_hud_telemetry)
 
+        # 3. Schedule next update
+        self.after(10000, self._refresh_hud_telemetry)
+        
     def edit_database_record(self, title, parent_window=None):
         """
-        REASON: DATABASE EDITOR.
-        Opens the multiline editor for a specific blueprint.
+        REASON: CONSOLIDATED EDITOR.
+        Uses the specialized AuditManager and multiline dialog instead of generic entry fields.
         """
         if not title: return
 
@@ -1518,132 +1507,157 @@ class ExplorerUI(ttk.Frame):
             self.audit_manager.add_blueprint(title, new_code)
             messagebox.showinfo("Success", f"Updated '{title}' in database.")
             
-            # Refresh Preview if active
+            # REASON: Trigger UI refresh if a scan is active
             if hasattr(self, 'run_audit_scan'):
                 self.run_audit_scan(self.txt_preview.get("1.0", tk.END))
-
+                
     def _ask_multiline(self, title, prompt, initial_value=""):
         """
-        REASON: MODAL TEXT EDITOR.
-        Helper for edit_database_record.
+        REASON: ADDING MISSING UTILITY. 
+        Provides the modal window required by line 1503 for database editing.
         """
         dialog = tk.Toplevel(self)
         dialog.title(title)
-        dialog.transient(self)
-        dialog.grab_set()
+        dialog.transient(self)  # Keeps window on top of explorer
+        dialog.grab_set()       # Prevents interaction with main window until closed
         
+        # Use a list to store the result so the nested on_save can modify it
         result = [None] 
 
         tk.Label(dialog, text=prompt, font=(None, 10, "bold")).pack(pady=10)
         
+        # Text area with scrollbar
         txt_frame = ttk.Frame(dialog)
         txt_frame.pack(padx=10, pady=5, expand=True, fill=tk.BOTH)
         
         txt = tk.Text(txt_frame, width=70, height=20, font=("Courier New", 11), undo=True)
         scrollbar = ttk.Scrollbar(txt_frame, command=txt.yview)
         txt.configure(yscrollcommand=scrollbar.set)
+        
         txt.insert("1.0", initial_value)
         
         txt.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         def on_save():
+            # REASON: Extract content and store in result list
             result[0] = txt.get("1.0", tk.END).strip()
             dialog.destroy()
 
         def on_cancel():
             dialog.destroy()
 
+        # Footer Buttons
         btn_frame = ttk.Frame(dialog, padding=10)
         btn_frame.pack(fill=tk.X)
         
         ttk.Button(btn_frame, text="Save Changes", command=on_save).pack(side=tk.RIGHT, padx=5)
         ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side=tk.RIGHT)
 
+        # REASON: This makes the function wait here until the window is destroyed
         self.wait_window(dialog)
         return result[0]
 
+#     def open_audit_blueprint_manager(self):  # [COMMENTED OUT BY PRUNER]
+
     def open_audit_blueprint_manager(self):
         """
-        REASON: BLUEPRINT MANAGER UI.
-        Uses Grid layout to ensure Edit buttons are always visible.
+        REASON: STRICT CHRONOLOGY FIX.
+        1. Packs Buttons FIRST (Bottom) to ensure visibility.
+        2. Creates Listbox SECOND (Top).
+        3. Defines 'get_target' helper LAST, so it can see the Listbox.
+        4. Adds Menu items LAST, so they can use the helper without warnings.
         """
+        # 1. WINDOW SETUP
         win = tk.Toplevel(self)
         win.title("Audit Blueprint Manager")
-        win.geometry("700x500")
+        win.geometry("600x450")
 
-        # GRID LAYOUT: Row 0 = List, Row 1 = Buttons
-        win.columnconfigure(0, weight=1)
-        win.rowconfigure(0, weight=1) 
-        win.rowconfigure(1, weight=0)
-
-        # 1. BUTTONS (Row 1)
+        # 2. THE "ROCKS" (Buttons) - Pack FIRST to reserve bottom space
         btn_frame = ttk.Frame(win, padding=10)
-        btn_frame.grid(row=1, column=0, sticky="ew")
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # 2. LISTBOX (Row 0)
+        # 3. THE "SAND" (Listbox) - Pack SECOND to fill remaining space
         main_frame = ttk.Frame(win, padding=5)
-        main_frame.grid(row=0, column=0, sticky="nsew")
-        
-        tk.Label(main_frame, text="Database Records:", font=("Arial", 10, "bold")).pack(anchor=tk.W)
+        main_frame.pack(side=tk.TOP, expand=True, fill=tk.BOTH)
+
+        tk.Label(main_frame, text="Database Records:", font=(None, 10, "bold")).pack(anchor=tk.W)
+
         lb_frame = ttk.Frame(main_frame)
         lb_frame.pack(expand=True, fill=tk.BOTH, pady=5)
-        
+
         scrollbar = ttk.Scrollbar(lb_frame)
         lb = tk.Listbox(lb_frame, yscrollcommand=scrollbar.set, 
-                        bg="#2b2b2b", fg="#00ff00", font=("Courier", 12), selectmode=tk.SINGLE)
+                        bg="#1e1e1e", fg="#00ff00", font=("Courier", 11),
+                        selectmode=tk.SINGLE)
+        
         scrollbar.config(command=lb.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         lb.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
 
+        # Populate List
         try:
             titles = sorted(self.audit_manager.get_all_titles())
             for t in titles: lb.insert(tk.END, t)
-        except:
+        except AttributeError:
             lb.insert(tk.END, "Error: AuditManager offline")
 
-        # Helper
+        # 4. THE HELPER (Defined AFTER Listbox exists)
         def get_target():
             sel = lb.curselection()
             if not sel: 
-                messagebox.showwarning("Select Record", "Please select a record.")
+                messagebox.showwarning("Select Record", "Please select a record first.")
                 return None
             return lb.get(sel[0])
 
-        # Buttons
+        # 5. THE ACTIONS (Defined LAST, now that get_target is ready)
+        
+        # A. Window Menu Bar (Failsafe)
+        menubar = tk.Menu(win)
+        win.config(menu=menubar)
+        actions_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Actions", menu=actions_menu)
+        
+        actions_menu.add_command(label="Edit Selected Record", 
+                                 command=lambda: self.edit_database_record(get_target(), win))
+        actions_menu.add_separator()
+        actions_menu.add_command(label="Close Window", command=win.destroy)
+
+        # B. Bottom Buttons
         ttk.Button(btn_frame, text="Close", command=win.destroy).pack(side=tk.RIGHT, padx=5)
         ttk.Button(btn_frame, text="Edit / View", 
                    command=lambda: self.edit_database_record(get_target(), win)).pack(side=tk.RIGHT)
 
-        # Actions Menu (Failsafe)
-        menubar = tk.Menu(win)
-        win.config(menu=menubar)
-        actions = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Actions", menu=actions)
-        actions.add_command(label="Edit Selected", command=lambda: self.edit_database_record(get_target(), win))
-        actions.add_command(label="Close", command=win.destroy)
-
-        # Bindings
-        lb.bind("<Double-1>", lambda e: self.edit_database_record(get_target(), win))
+        # C. Context Menu (Right-Click)
+        ctx_menu = tk.Menu(win, tearoff=0)
+        ctx_menu.add_command(label="Edit Record", 
+                             command=lambda: self.edit_database_record(get_target(), win))
         
-        ctx = tk.Menu(win, tearoff=0)
-        ctx.add_command(label="Edit Record", command=lambda: self.edit_database_record(get_target(), win))
-        
-        def show_ctx(e):
+        def show_ctx(event):
             try:
                 lb.selection_clear(0, tk.END)
-                lb.activate(f"@{e.x},{e.y}")
-                lb.selection_set(f"@{e.x},{e.y}")
-                ctx.post(e.x_root, e.y_root)
+                lb.activate(f"@{event.x},{event.y}")
+                lb.selection_set(f"@{event.x},{event.y}")
+                ctx_menu.post(event.x_root, event.y_root)
             except: pass
 
         lb.bind("<Button-3>", show_ctx)
-        if self.tk.call('tk', 'windowingsystem') == 'aqua':
+        lb.bind("<Double-1>", lambda e: self.edit_database_record(get_target(), win))
+        
+        if self.root.tk.call('tk', 'windowingsystem') == 'aqua':
             lb.bind("<Button-2>", show_ctx)
+            
+        def show_context(event):
+            # Select item under cursor
+            lb.selection_clear(0, tk.END)
+            lb.activate(f"@{event.x},{event.y}")
+            lb.selection_set(f"@{event.x},{event.y}")
+            ctx_menu.post(event.x_root, event.y_root)
 
-    # --- END CLEAN BLOCK ---
-
-
+        # Bindings for both Mac (Button-2) and Windows/Linux (Button-3)
+        lb.bind("<Button-2>", show_context)
+        lb.bind("<Button-3>", show_context)
+        
     def __init__(self, parent, logic_handler):
         """
         REASON: HARDENED INITIALIZATION.
@@ -1818,7 +1832,7 @@ class ExplorerUI(ttk.Frame):
         
         db_menu = tk.Menu(file_menu, tearoff=0)
         db_menu.add_command(label="Add Database", command=self.wizard_add_to_db)
-        db_menu.add_command(label="List Database", command=self.open_audit_blueprint_manager)
+        db_menu.add_command(label="List Database", command=self.list_audit_db)
         file_menu.add_cascade(label="Database", menu=db_menu)
         
         vis_menu = tk.Menu(menubar, tearoff=0)

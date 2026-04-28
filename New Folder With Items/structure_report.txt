@@ -1,0 +1,138 @@
+28:class ToolTip:
+29:    def __init__(self, widget, text=""):
+35:    def show_tip(self, x=None, y=None, text=None):
+64:    def hide_tip(self, event=None):
+70:class DirectoryVisualizer(tk.Toplevel):
+71:    def __init__(self, parent, path):
+85:    def _scan_and_draw(self):
+103:    def _draw_pie_chart(self, stats, total_size):
+142:class VisualizerLauncher(tk.Toplevel):
+143:    def __init__(self, parent, root_path, generator_callback):
+159:    def _setup_ui(self):
+185:    def _create_scrollable_frame(self, parent):
+201:    def _scan_metadata(self):
+217:    def _populate_ui(self):
+232:    def _select_all(self):
+236:    def _select_none(self):
+240:    def _on_generate(self):
+248:class ConfigurableGraphGenerator:
+254:    def _build_symbol_table(self, file_nodes):
+282:    def _analyze_file(self, node, symbol_table):
+349:    # def _analyze_relationships(self, nodes, file_nodes):
+352:    #     def scan_single_file(source_node):
+360:    def generate_3d_view(self, root_path, allowed_exts, allowed_folders):
+372:    def _get_dir_size(self, path):
+386:    def _generate_data(self, root_path, allowed_exts, allowed_folders):
+483:    def _get_color(self, ext):
+495:    def _get_html_template(self):
+628:class AuditManager:
+631:    def __init__(self):
+634:    def _load_db(self):
+642:    def add_blueprint(self, name, code_block):
+647:    def get_all_titles(self):
+650:    def get_blueprint_code(self, title):
+653:    def find_conformity(self, content):
+655:        def get_tokens(text):
+681:class SyntaxHighlighter:
+695:    def __init__(self, text_widget):
+699:    def _configure_tags(self):
+714:    def highlight(self, content, file_extension):
+730:    def _apply_pattern(self, pattern, tag_name, content_str):
+736:    def _highlight_python(self, content):
+746:    def _highlight_shell(self, content):
+755:    def _highlight_json_js(self, content):
+762:    def _highlight_generic(self, content):
+766:class FileSystemHandler:
+769:    def search_files(self, start_path, query, cancel_event=None):
+788:    def list_directory(self, path):
+800:    def _create_item_dict(self, entry):
+807:    def _create_item_dict_from_path(self, path):
+814:    def _format_item_data(self, name, path, is_dir, stats):
+823:    def _format_size(self, size):
+829:    def get_preview_content(self, path, offset=0):
+893:class SystemMonitor(ttk.Frame):
+894:    def __init__(self, parent):
+916:    def set_tasks(self, count):
+919:    def update_stats(self):
+933:    def _fmt(self, b):
+938:class LiveServer(threading.Thread):
+939:    def __init__(self, start_port):
+951:                class Handler(http.server.SimpleHTTPRequestHandler):
+952:                    def log_message(self, format, *args): pass 
+953:                    def end_headers(self):
+972:    def run(self):
+980:class GitHandler:
+986:    def get_commit_log(self, path, limit=15):
+996:    def __init__(self):
+999:    def _run_git(self, args, cwd=None):
+1016:    def get_status(self, path):
+1044:class MockRemoteHandler:
+1049:    def get_pull_requests(self):
+1056:    def get_issues(self):
+1062:    def get_pr_details(self, pr_id):
+1079:class OpsHUD(tk.Canvas):
+1080:    def __init__(self, parent, stats_callback, preview_callback=None, **kwargs):
+1121:    def update_data(self, *args):
+1148:    def _animate(self):
+1166:    def _text(self, x, y, text, color, max_w, is_bold=False, center=False):
+1171:    def _get_adaptive_font(self, text, max_width, is_bold=False):
+1181:    def _draw(self):
+1254:    def _draw_sys_channel(self, w, h, safe_w):
+1323:    def _draw_net_channel(self, w, h, safe_w):
+1359:    def _on_canvas_click(self, event):
+1366:    def _on_list_select(self, event):
+1379:    def _draw(self):
+1447:    def _text(self, x, y, text, color, max_width, is_bold=False, center=False):
+1455:    def _animate(self):
+1462:class ExplorerUI(ttk.Frame):
+1464:    def _refresh_hud_telemetry(self):
+1492:    def edit_database_record(self, title, parent_window=None):
+1514:    def _ask_multiline(self, title, prompt, initial_value=""):
+1542:        def on_save():
+1547:        def on_cancel():
+1561:    def open_audit_blueprint_manager(self):
+1590:        def get_target():
+1649:        def show_ctx(event):
+1661:        def show_context(event):
+1672:    def __init__(self, parent, logic_handler):
+1737:    def _setup_layout(self):
+1833:    def show_remote_details(self, text):
+1840:    def _setup_menus(self):
+1855:    def visualize_folder(self):
+1858:    def visualize_3d_network(self):
+1863:    def _start_live_generation(self, allowed_exts, allowed_folders):
+1880:            def update_loop():
+1897:    def _get_fs_fingerprint(self, path):
+1922:    def wizard_add_to_db(self):
+1934:        def on_save():
+1943:    def list_audit_db(self):
+1955:    def run_audit_scan(self, content):
+1959:    def _threaded_audit_scan(self, content, target_file):
+1963:    def _apply_audit_results(self, matches, target_file):
+1974:    def on_item_edit(self, event=None):
+1995:    def save_changes(self, item_id, new_values):
+2002:    def _on_text_motion(self, event):
+2014:    def _process_hover(self, event):
+2050:    def _load_favorites(self):
+2057:    def _save_to_favorite(self, idx):
+2063:    def _jump_to_favorite(self, idx):
+2066:    def _update_mem_ui(self):
+2072:    def load_path(self, path):
+2076:    def _finish_load(self, items, path):
+2097:    def perform_search(self):
+2102:    def _finish_search(self, res):
+2104:    def clear_search(self):
+2107:    def _setup_context_menu(self):
+2115:    def reveal_in_finder(self):
+2118:    def copy_path_to_clipboard(self):
+2121:    def open_terminal_at_selection(self):
+2127:    def _bind_events(self):
+2140:    def _show_ctx(self, e):
+2144:    def _on_dbclick(self):
+2190:    def update_preview(self, path):
+2205:    def load_next_chunk(self):
+2219:    def copy_preview_to_clipboard(self):
+2223:    def _sort_column(self, col):
+2225:        def nk(t): return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(t))]
+2230:    def _populate_tree(self, items):
+2238:    def go_up(self):

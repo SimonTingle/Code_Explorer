@@ -18,22 +18,12 @@ from concurrent.futures import ThreadPoolExecutor
 # --- MISSING IMPORTS ADDED BELOW ---
 import http.server
 import socketserver 
-# import pyvirtualdisplay
 # -----------------------------------
 
-# Check if we are running on Render (which defines PORT or other env vars)
-# if os.environ.get('RENDER'):
-#     from pyvirtualdisplay import Display
-#     # Start a virtual screen in the background
-#     display = Display(visible=0, size=(1024, 768))
-#     display.start()
-    
 try:
     import psutil
 except ImportError:
     psutil = None
-    
-
 
 class ToolTip:
     def __init__(self, widget, text=""):
@@ -952,11 +942,6 @@ class LiveServer(threading.Thread):
         self.actual_port = None # Will store the successfully bound port
         self.httpd = None
         self.root_dir = os.path.dirname(os.path.abspath(__file__))
-                        # REASON: RENDER PORT BINDING.
-        # On Render, we MUST listen on the port provided by the environment.
-        # render_port = int(os.environ.get("PORT", 8099)) 
-        # self.server_thread = LiveServer(render_port)
-        # self.server_thread.start()
 
         # REASON: Loop through a range of ports to avoid "Address already in use" crashes.
         # This makes the server "Indestructible" on restart.
@@ -970,12 +955,8 @@ class LiveServer(threading.Thread):
                         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
                         super().end_headers()
                 
-                # socketserver.TCPServer.allow_reuse_address = True
-                # self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler)
                 socketserver.TCPServer.allow_reuse_address = True
-                # REASON: LAN ACCESS. 
-                # Changing "127.0.0.1" to "0.0.0.0" allows other devices on the WiFi to connect.
-                self.httpd = socketserver.ThreadingTCPServer(("0.0.0.0", port), Handler)
+                self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler)
                 
                 # If we reach here, the bind was successful
                 self.actual_port = port
@@ -1638,7 +1619,7 @@ class ExplorerUI(ttk.Frame):
             except: pass
 
         lb.bind("<Button-3>", show_ctx)
-        if self.tk.call('tk', 'windowingsystem') == 'aqua':
+        if self.root.tk.call('tk', 'windowingsystem') == 'aqua':
             lb.bind("<Button-2>", show_ctx)
 
     # --- END CLEAN BLOCK ---
@@ -1818,7 +1799,7 @@ class ExplorerUI(ttk.Frame):
         
         db_menu = tk.Menu(file_menu, tearoff=0)
         db_menu.add_command(label="Add Database", command=self.wizard_add_to_db)
-        db_menu.add_command(label="List Database", command=self.open_audit_blueprint_manager)
+        db_menu.add_command(label="List Database", command=self.list_audit_db)
         file_menu.add_cascade(label="Database", menu=db_menu)
         
         vis_menu = tk.Menu(menubar, tearoff=0)
